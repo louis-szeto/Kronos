@@ -32,6 +32,8 @@ class KronosTimeSeriesDataset(Dataset):
         train_split: float = 0.8,
         val_split: float = 0.1,
         split_type: str = 'train',  # 'train', 'val', or 'test'
+        class_balance: str = 'none',  # 'none', 'oversample', 'undersample', 'class_weights'
+        oversample_ratio: float = 1.0,
     ):
         """
         Initialize time series dataset.
@@ -44,14 +46,112 @@ class KronosTimeSeriesDataset(Dataset):
             train_split: Fraction of data for training
             val_split: Fraction of data for validation
             split_type: Which split to use ('train', 'val', 'test')
+            class_balance: Method to handle class imbalance
+            oversample_ratio: Target ratio for oversampling (1.0 = equal samples)
         """
         self.tokenizer = tokenizer
         self.max_context = max_context
         self.use_volume = use_volume
+        self.class_balance = class_balance
         
         print(f"Loading data from {data_path}...")
         self.data = self._load_json_data(data_path, train_split, val_split, split_type)
+        
+        # Apply class balancing only for training split
+        if split_type == 'train' and class_balance != 'none':
+            self.data = self._apply_class_balancing(self.data, class_balance, oversample_ratio)
+        
         print(f"Loaded {len(self.data)} samples for {split_type} split")
+        self._print_class_distribution()
+    
+    def _print_class_distribution(self):
+        """Print class distribution statistics."""
+        from collections import Counter
+        label_counts = Counter([sample['label'] for sample in self.data])
+        print(f"Class distribution: {dict(label_counts)}")
+        if len(label_counts) > 1:
+            minority_class = min(label_counts, key=label_counts.get)
+            majority_class = max(label_counts, key=label_counts.get)
+            ratio = label_counts[majority_class] / label_counts[minority_class]
+            print(f"Class imbalance ratio: {ratio:.2f}:1 (majority:minority)")
+    
+    def _apply_class_balancing(self, data, method, oversample_ratio):
+        """Apply class balancing technique."""
+        from collections import Counter
+        import random
+        
+        # Get class distribution
+        labels = [sample['label'] for sample in data]
+        label_counts = Counter(labels)
+        
+        print(f"\nOriginal distribution: {dict(label_counts)}")
+        
+        if method == 'oversample':
+            # Oversample minority classes
+            max_count = max(label_counts.values())
+            target_count = int(max_count * oversample_ratio)
+            
+            balanced_data = []
+            for label in label_counts.keys():
+                # Get all samples for this class
+                class_samples = [s for s in data if s['label'] == label]
+                
+                if len(class_samples) < target_count:
+                    # Oversample with replacement
+                    oversampled = random.choices(class_samples, k=target_count)
+                    balanced_data.extend(oversampled)
+                    print(f"Class {label}: {len(class_samples)} -> {target_count} (oversampled)")
+                else:
+                    balanced_data.extend(class_samples)
+                    print(f"Class {label}: {len(class_samples)} (kept as is)")
+            
+            random.shuffle(balanced_data)
+            return balanced_data
+        
+        elif method == 'undersample':
+            # Undersample majority classes
+            min_count = min(label_counts.values())
+            
+            balanced_data = []
+            for label in label_counts.keys():
+                class_samples = [s for s in data if s['label'] == label]
+                
+                if len(class_samples) > min_count:
+                    # Undersample randomly
+                    undersampled = random.sample(class_samples, min_count)
+                    balanced_data.extend(undersampled)
+                    print(f"Class {label}: {len(class_samples)} -> {min_count} (undersampled)")
+                else:
+                    balanced_data.extend(class_samples)
+                    print(f"Class {label}: {len(class_samples)} (kept as is)")
+            
+            random.shuffle(balanced_data)
+            return balanced_data
+        
+        return data
+    
+    def get_class_weights(self):
+        """Calculate class weights for weighted loss (inverse frequency)."""
+        from collections import Counter
+        import numpy as np
+        
+        labels = [sample['label'] for sample in self.data]
+        label_counts = Counter(labels)
+        
+        # Calculate inverse frequency weights
+        total = len(labels)
+        num_classes = len(label_counts)
+        
+        weights = {}
+        for label in range(num_classes):
+            if label in label_counts:
+                weights[label] = total / (num_classes * label_counts[label])
+            else:
+                weights[label] = 1.0
+        
+        # Convert to tensor
+        weight_list = [weights[i] for i in range(num_classes)]
+        return torch.tensor(weight_list, dtype=torch.float32)
     
     def _load_json_data(self, data_path: str, train_split: float, val_split: float, split_type: str):
         """Load and split data from JSON files."""
@@ -205,6 +305,7 @@ class KronosFineTuner:
         local_rank: int = -1,
         fp16: bool = False,
         freeze_backbone_epochs: int = 0,
+        class_weights: Optional[torch.Tensor] = None,
     ):
         self.model = model
         self.train_dataset = train_dataset
@@ -224,6 +325,7 @@ class KronosFineTuner:
         self.local_rank = local_rank
         self.fp16 = fp16
         self.freeze_backbone_epochs = freeze_backbone_epochs
+        self.class_weights = class_weights
         
         os.makedirs(output_dir, exist_ok=True)
         
@@ -382,11 +484,11 @@ class KronosFineTuner:
             
             if self.fp16:
                 with torch.cuda.amp.autocast():
-                    outputs = self.model(**batch)
+                    outputs = self.model(**batch, class_weights=self.class_weights)
                     loss = outputs['loss'] / self.gradient_accumulation_steps
                 self.scaler.scale(loss).backward()
             else:
-                outputs = self.model(**batch)
+                outputs = self.model(**batch, class_weights=self.class_weights)
                 loss = outputs['loss'] / self.gradient_accumulation_steps
                 loss.backward()
             
@@ -493,6 +595,11 @@ def main():
                        help="Fraction of data for training")
     parser.add_argument("--val_split", type=float, default=0.1,
                        help="Fraction of data for validation")
+    parser.add_argument("--class_balance", type=str, default="none",
+                       choices=["none", "oversample", "undersample", "class_weights"],
+                       help="Method to handle class imbalance")
+    parser.add_argument("--oversample_ratio", type=float, default=1.0,
+                       help="Target ratio for minority class (1.0 = equal samples)")
     parser.add_argument("--no_volume", action="store_true")
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--local_rank", type=int, default=-1)
@@ -517,7 +624,9 @@ def main():
         use_volume=not args.no_volume,
         train_split=args.train_split,
         val_split=args.val_split,
-        split_type='train'
+        split_type='train',
+        class_balance=args.class_balance,
+        oversample_ratio=args.oversample_ratio
     )
     
     val_dataset = KronosTimeSeriesDataset(
@@ -527,7 +636,9 @@ def main():
         use_volume=not args.no_volume,
         train_split=args.train_split,
         val_split=args.val_split,
-        split_type='val'
+        split_type='val',
+        class_balance='none',  # Don't balance validation set
+        oversample_ratio=1.0
     )
     
     test_dataset = KronosTimeSeriesDataset(
@@ -537,8 +648,16 @@ def main():
         use_volume=not args.no_volume,
         train_split=args.train_split,
         val_split=args.val_split,
-        split_type='test'
+        split_type='test',
+        class_balance='none',  # Don't balance test set
+        oversample_ratio=1.0
     )
+    
+    # Get class weights if using weighted loss
+    class_weights = None
+    if args.class_balance == 'class_weights':
+        class_weights = train_dataset.get_class_weights()
+        print(f"Using class weights: {class_weights}")
     
     finetuner = KronosFineTuner(
         model=model,
@@ -554,6 +673,7 @@ def main():
         freeze_backbone_epochs=args.freeze_backbone_epochs,
         local_rank=args.local_rank,
         fp16=args.fp16,
+        class_weights=class_weights,
     )
     
     finetuner.train()

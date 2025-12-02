@@ -163,6 +163,7 @@ class KronosClassificationModel(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
         return_dict: bool = True,
+        class_weights: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Forward pass through the model.
@@ -172,6 +173,7 @@ class KronosClassificationModel(nn.Module):
             attention_mask: Attention mask [batch_size, seq_len]
             labels: Ground truth labels [batch_size]
             return_dict: Whether to return dictionary
+            class_weights: Optional class weights for loss calculation
             
         Returns:
             Dictionary containing loss (if labels provided) and logits
@@ -196,7 +198,11 @@ class KronosClassificationModel(nn.Module):
         # Calculate loss if labels provided
         loss = None
         if labels is not None:
-            loss_fct = nn.CrossEntropyLoss()
+            if class_weights is not None:
+                class_weights = class_weights.to(logits.device)
+                loss_fct = nn.CrossEntropyLoss(weight=class_weights)
+            else:
+                loss_fct = nn.CrossEntropyLoss()
             loss = loss_fct(logits.view(-1, self.num_classes), labels.view(-1))
         
         if return_dict:
