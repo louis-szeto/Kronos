@@ -15,36 +15,53 @@ import sys
 
 class KronosClassificationPipeline:
     """Inference pipeline for Kronos classification model."""
-    
+
     def __init__(
         self,
         model_path: str,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: str = None,  # Auto-detect if None
         batch_size: int = 32,
         max_context: int = 512,
     ):
         """
         Initialize inference pipeline.
-        
+
         Args:
             model_path: Path to trained model checkpoint
-            device: Device to run inference on
+            device: Device to run inference on (None for auto-detect)
             batch_size: Batch size for inference
             max_context: Maximum context length
         """
         from kronos_classification_base import KronosClassificationModel
-        
+
+        # Auto-detect fastest GPU if not specified
+        if device is None:
+            if torch.cuda.is_available():
+                # Find GPU with most free memory
+                max_free_memory = 0
+                best_device = 0
+                for i in range(torch.cuda.device_count()):
+                    props = torch.cuda.get_device_properties(i)
+                    free_memory = torch.cuda.mem_get_info(i)[0] / (1024**3)  # GB
+                    if free_memory > max_free_memory:
+                        max_free_memory = free_memory
+                        best_device = i
+                device = f"cuda:{best_device}"
+                print(f"Auto-selected GPU {best_device} with {max_free_memory:.1f}GB free memory")
+            else:
+                device = "cpu"
+
         print(f"Loading model from {model_path}...")
         self.model = KronosClassificationModel.from_pretrained(model_path)
         self.model.to(device)
         self.model.eval()
-        
+
         self.device = device
         self.batch_size = batch_size
         self.max_context = max_context
         self.tokenizer = self.model.tokenizer
         self.use_volume = self.model.use_volume
-        
+
         print(f"Model loaded on {device}")
     
     def predict(

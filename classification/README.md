@@ -13,11 +13,15 @@ Kronos is a time series foundation model that uses a specialized tokenizer to qu
 
 ## Key Features
 
-- **Time Series Input**: Processes OHLCV (Open, High, Low, Close, Volume) data
-- **Flexible Architecture**: Multiple pooling strategies (mean, last, max, attention)
-- **Multi-GPU Training**: Full distributed training support with DDP
-- **Mixed Precision**: FP16 support for faster training
-- **Incremental Training**: Pretrain on large datasets, then fine-tune on specific tasks
+- **Flexible Input Dimensions**: Supports N×4 (OHLC), N×5 (OHLCV), or N×6 (with exogenous features)
+- **Variable Length Sequences**: Handles sequences from 20 to 200 timesteps with smart padding
+- **Adaptive Loss Functions**: Auto-detects binary vs multi-class, supports focal loss and label smoothing
+- **Class Imbalance Handling**: Oversampling, undersampling, and class-weighted loss
+- **RL Fine-tuning**: REINFORCE policy gradient for further improvement
+- **Multiple Checkpoint Formats**: SafeTensors and PyTorch (.pth) support
+- **Comprehensive Metrics**: Accuracy, F1, precision, recall on train/val/test sets
+- **GPU Optimization**: Auto GPU selection, FP16 mixed precision, optimized data loading
+- **Multi-GPU Support**: Distributed training with torchrun (3.5-4x speedup on 4 GPUs)
 
 ## Prerequisites
 
@@ -27,43 +31,26 @@ First, clone and install the Kronos repository:
 git clone https://github.com/shiyu-coder/Kronos.git
 cd Kronos
 pip install -r requirements.txt
+pip install scikit-learn transformers accelerate safetensors
 ```
 
-Then install additional dependencies:
+## Input Data Format
 
-```bash
-pip install scikit-learn transformers accelerate
-```
-
-## Project Structure
-
-```
-kronos-classification/
-├── kronos_classification_base.py    # Base model architecture
-├── kronos_pretrain.py               # Pretraining script
-├── kronos_finetune.py               # Fine-tuning script
-├── kronos_inference.py              # Inference and utilities
-├── requirements.txt                 # Dependencies
-└── README.md                        # This file
-```
-
-## Data Format
-
-Your data should be in JSON format with the following structure:
+The model expects JSON files with the following structure:
 
 ```json
 {
   "info": {
-    "ticker": "stocks/AMD",
+    "ticker": "stocks/A",
     "total_patterns": 1283,
     "label_statistics": {
-      "1": 131,
-      "0": 1138
+      "1": 233,
+      "0": 1000
     }
   },
   "results": [
     {
-      "ticker": "stocks/AMD",
+      "ticker": "stocks/A",
       "timeframe": "4h",
       "assigned_label": 1,
       "chart_data": {
@@ -79,91 +66,136 @@ Your data should be in JSON format with the following structure:
 }
 ```
 
-**Important**: Only samples with `assigned_label` set (not `null`) will be used for training. The dataset automatically:
-- Loads all JSON files from a directory
-- Filters out samples without labels
-- Calculates `amount` from price × volume
-- Splits data into train/val/test sets (default 80/10/10)
+**Important**: Only samples with `assigned_label` set (not `null`) will be used for training.
 
-## Quick Start
+The model will automatically:
+- Load all JSON files from the input directory
+- Filter out samples without labels
+- Calculate `amount` from `close × volume`
+- Split data into train/val/test sets (default 80/10/10)
 
-### 1. Prepare Your Data
+## Quick Start Guide
 
-Place all your labeled JSON files in a directory (e.g., `./data/`). The scripts will:
-- Load all `*.json` files in the directory
-- Use only samples where `assigned_label` is not `null`
-- Automatically split into train/val/test sets (80/10/10 by default)
+### 1. Pre-training (Supervised Learning)
 
-### 2. Pretrain the Model
-
-#### Single GPU:
+Train the model from scratch on your labeled data:
 
 ```bash
-python kronos_pretrain.py \
-    --data_dir ./data \
+# Auto-detect fastest GPU (recommended)
+python classification/kronos_pretrain.py \
+    --data_dir /path/to/labeled_data \
     --kronos_model NeoQuasar/Kronos-base \
     --tokenizer_path NeoQuasar/Kronos-Tokenizer-base \
     --num_classes 2 \
     --output_dir ./pretrain_checkpoints \
-    --batch_size 16 \
+    --batch_size 24 \
     --learning_rate 2e-5 \
     --num_epochs 3 \
-    --train_split 0.8 \
-    --val_split 0.1 \
     --pooling_strategy mean \
+    --loss_type focal \
+    --class_balance oversample \
+    --save_format safetensors \
     --fp16
-```
 
-#### Multiple GPUs (4 GPUs):
-
-```bash
-torchrun --standalone --nproc_per_node=4 kronos_pretrain.py \
-    --data_dir ./data \
+# Use specific GPU
+python classification/kronos_pretrain.py \
+    --data_dir /path/to/labeled_data \
     --kronos_model NeoQuasar/Kronos-base \
-    --tokenizer_path NeoQuasar/Kronos-Tokenizer-base \
     --num_classes 2 \
-    --output_dir ./pretrain_checkpoints \
-    --batch_size 16 \
-    --learning_rate 2e-5 \
-    --num_epochs 3 \
-    --train_split 0.8 \
-    --val_split 0.1 \
+    --device cuda:2 \
+    --fp16
+
+# Multi-GPU training (all 4 GPUs, 3.5-4x faster)
+torchrun --standalone --nproc_per_node=4 classification/kronos_pretrain.py \
+    --data_dir /path/to/labeled_data \
+    --kronos_model NeoQuasar/Kronos-base \
+    --num_classes 2 \
+    --batch_size 24 \
     --fp16
 ```
 
-### 3. Fine-tune on Specific Task
+### 2. Fine-tuning
+
+Fine-tune a pretrained model on new data:
 
 ```bash
-python kronos_finetune.py \
-    --data_dir ./data \
+# Auto-detect fastest GPU
+python classification/kronos_finetune.py \
+    --data_dir /path/to/new_data \
     --pretrained_checkpoint ./pretrain_checkpoints/best_model \
     --num_classes 2 \
-    --output_dir ./finetune_checkpoints \
-    --batch_size 16 \
+    --output_dir ./finetuned_checkpoints \
+    --batch_size 48 \
     --learning_rate 5e-5 \
     --num_epochs 5 \
-    --train_split 0.8 \
-    --val_split 0.1 \
     --freeze_backbone_epochs 1 \
+    --class_balance class_weights \
+    --fp16
+
+# Multi-GPU
+torchrun --standalone --nproc_per_node=4 classification/kronos_finetune.py \
+    --data_dir /path/to/new_data \
+    --pretrained_checkpoint ./pretrain_checkpoints/best_model \
+    --num_classes 2 \
+    --batch_size 24 \
     --fp16
 ```
 
-### 4. Run Inference
+**Key Parameters:**
+- `--freeze_backbone_epochs`: Number of epochs to freeze backbone (train only head)
+- Use lower learning rate for fine-tuning (5e-5 vs 2e-5 for pretraining)
+
+### 3. RL Fine-tuning (Optional)
+
+Further improve accuracy using REINFORCE policy gradient after supervised training:
+
+```bash
+# Single GPU
+python classification/kronos_rl_finetune.py \
+    --model_path ./finetuned_checkpoints/best_model \
+    --data_dir /path/to/labeled_data \
+    --output_dir ./rl_checkpoints \
+    --batch_size 16 \
+    --learning_rate 1e-5 \
+    --num_epochs 3 \
+    --fp16
+
+# Multi-GPU
+torchrun --standalone --nproc_per_node=4 classification/kronos_rl_finetune.py \
+    --model_path ./finetuned_checkpoints/best_model \
+    --batch_size 16 \
+    --fp16
+```
+
+**Key Parameters:**
+- `--gamma`: Discount factor for rewards (default: 0.99)
+- `--entropy_coef`: Entropy regularization (default: 0.01)
+- `--reward_scale`: Scale factor for rewards (default: 1.0)
+
+### 4. Inference
+
+Run inference on new data:
 
 ```python
-from kronos_inference import KronosClassificationPipeline
+from classification.kronos_inference import KronosClassificationPipeline
 import pandas as pd
 import json
 
-# Initialize pipeline
+# Initialize pipeline (auto-detects fastest GPU)
 pipeline = KronosClassificationPipeline(
-    model_path="./finetune_checkpoints/best_model",
-    device="cuda",
-    batch_size=32
+    model_path="./finetuned_checkpoints/best_model",
+    batch_size=64
 )
 
+# Or specify device
+# pipeline = KronosClassificationPipeline(
+#     model_path="./finetuned_checkpoints/best_model",
+#     device="cuda:2",
+#     batch_size=64
+# )
+
 # Load a sample from your JSON file
-with open('./data/your_data.json', 'r') as f:
+with open('/path/to/data.json', 'r') as f:
     data = json.load(f)
 
 sample = data['results'][0]
@@ -189,12 +221,19 @@ print(f"Predicted class: {prediction}")
 results = pipeline.predict(df, timestamps, return_probs=True)
 print(f"Prediction: {results['predictions']}")
 print(f"Probabilities: {results['probabilities']}")
+
+# Top-k predictions
+results = pipeline.predict(df, timestamps, return_probs=True, return_top_k=3)
+print(f"Top-3 classes: {results['top_k_predictions']}")
+print(f"Top-3 probabilities: {results['top_k_probabilities']}")
 ```
 
 ## Model Architecture
 
 ```
-Input: OHLCV Time Series Data
+Input: OHLCV Time Series Data [N x 4/5/6]
+    ↓
+Smart Padding (if N < min_context) or Truncation (if N > max_context)
     ↓
 Kronos Tokenizer (quantizes to discrete tokens)
     ↓
@@ -218,42 +257,86 @@ Classification Head:
 Logits [batch_size, num_classes]
 ```
 
-## Configuration Options
+## Input Dimension Support
 
-### Pooling Strategies
+The model supports flexible input dimensions:
 
-- `mean`: Mean pooling over sequence (default)
-- `last`: Use last time step representation
-- `max`: Max pooling over sequence
-- `attention`: Learned attention-based pooling
+| Dimension | Columns | Use Case |
+|-----------|---------|----------|
+| N × 4 | `open, high, low, close` | Price-only data |
+| N × 5 | `open, high, low, close, volume` | Standard OHLCV |
+| N × 6 | `open, high, low, close, volume, indicator` | With exogenous features |
 
-Example:
+Set `--no_volume` flag for N×4 input. The `amount` column is automatically computed as `close × volume`.
+
+For N×6 input with exogenous features, use `--num_exogenous 1` and ensure your data has a column named `indicator` or `exogenous_0`.
+
+## Class Imbalance Handling
+
+The model provides multiple strategies for handling class imbalance:
+
+### 1. Oversampling (Recommended for Small Datasets)
 ```bash
-python kronos_pretrain.py --pooling_strategy attention ...
+--class_balance oversample --oversample_ratio 1.0
 ```
+- Resamples minority class to match majority class
+- `oversample_ratio=1.0` means equal samples per class
 
-### Freeze Backbone
-
-Train only the classification head for first N epochs:
-
+### 2. Undersampling
 ```bash
-python kronos_finetune.py --freeze_backbone_epochs 2 ...
+--class_balance undersample
 ```
+- Reduces majority class to match minority class
+- Loses data but faster training
 
-### Without Volume Data
-
-If your data doesn't include volume/amount:
-
+### 3. Class Weights
 ```bash
-python kronos_pretrain.py --no_volume ...
+--class_balance class_weights
 ```
+- Uses inverse frequency weights in loss function
+- No data duplication, preserves original distribution
+
+### 4. Focal Loss
+```bash
+--loss_type focal
+```
+- Automatically focuses on hard-to-classify examples
+- Works well with severe class imbalance
+
+## Loss Functions
+
+The model supports adaptive loss functions:
+
+| Loss Type | Description | Best For |
+|-----------|-------------|----------|
+| `auto` (None) | CrossEntropy for multi-class, BCE for binary | General purpose |
+| `cross_entropy` | Standard cross-entropy | Multi-class, balanced data |
+| `focal` | Focal loss with gamma=2 | Imbalanced datasets |
+| `label_smoothing` | Label smoothed cross-entropy | Preventing overconfidence |
 
 ## Advanced Usage
 
-### Analyze Checkpoint
+### Variable Length Sequences
+
+The model handles sequences from 20-200 timesteps:
 
 ```bash
-python kronos_inference.py analyze ./pretrain_checkpoints/best_model
+python classification/kronos_pretrain.py \
+    --min_context 20 \
+    --max_context 200 \
+    --padding_strategy right \
+    ...
+```
+
+**Padding Strategies:**
+- `right`: Pad at the end (default, preserves most recent data)
+- `left`: Pad at the beginning (preserves latest data)
+- `both`: Pad on both sides (centered)
+
+### Analyze Model Checkpoint
+
+```bash
+python classification/kronos_inference.py analyze ./checkpoints/best_model
 ```
 
 Output:
@@ -270,89 +353,110 @@ Best validation metric: 0.8756
 
 Model Configuration:
 Number of classes: 2
-Hidden size: 768
+Input dimensions: 5 (OHLCV)
 Max context: 512
+Min context: 20
 Use volume: True
 Pooling strategy: mean
+Padding strategy: right
+Loss type: focal
 ```
 
 ### Batch Prediction from File
 
 ```bash
-python kronos_inference.py predict ./finetune_checkpoints/best_model input.pkl output.pkl
-```
-
-### Custom Data Preprocessing
-
-```python
-import pickle
-import pandas as pd
-
-# Load your raw data
-df = pd.read_csv('market_data.csv')
-
-# Create windowed samples
-samples = []
-window_size = 200
-
-for i in range(window_size, len(df)):
-    window_df = df.iloc[i - window_size:i]
-    
-    # Define label (example: predict next day direction)
-    label = 1 if df.iloc[i]['close'] > df.iloc[i-1]['close'] else 0
-    
-    samples.append({
-        'data': window_df[['open', 'high', 'low', 'close', 'volume', 'amount']],
-        'label': label,
-        'timestamps': pd.to_datetime(window_df['timestamp'])
-    })
-
-# Save
-with open('my_dataset.pkl', 'wb') as f:
-    pickle.dump(samples, f)
+python classification/kronos_inference.py predict \
+    ./checkpoints/best_model \
+    input.pkl \
+    output.pkl
 ```
 
 ## Performance Optimization
 
+### GPU Selection
+
+The model supports automatic GPU selection and manual specification:
+
+```bash
+# Auto-detect fastest GPU (recommended)
+python classification/kronos_pretrain.py --data_dir ... --fp16
+
+# Manually specify GPU
+python classification/kronos_pretrain.py --data_dir ... --device cuda:2 --fp16
+
+# Use all 4 GPUs (3.5-4x speedup)
+torchrun --standalone --nproc_per_node=4 classification/kronos_pretrain.py \
+    --data_dir ... --fp16
+
+# Use specific GPUs only
+CUDA_VISIBLE_DEVICES=1,2,3 torchrun --standalone --nproc_per_node=3 \
+    classification/kronos_pretrain.py --data_dir ... --fp16
+```
+
+**For detailed GPU training guide, see [GPU_TRAINING_GUIDE.md](GPU_TRAINING_GUIDE.md)**
+
 ### Memory Optimization
 
-1. Use FP16 training:
+1. **Use FP16 training** (~2x speedup, ~50% memory reduction):
 ```bash
 --fp16
 ```
 
-2. Reduce batch size and increase gradient accumulation:
+2. **Reduce batch size with gradient accumulation**:
 ```bash
 --batch_size 8 --gradient_accumulation_steps 4
 ```
 
-3. Reduce max_context if possible:
+3. **Reduce max_context** for shorter sequences:
 ```bash
 --max_context 256
 ```
 
-### Training Speed
+4. **Adjust data loading workers**:
+```bash
+--num_workers 8 --prefetch_factor 4
+```
 
-1. Use multiple GPUs with `torchrun`
+### Multi-GPU Training
+
+Use `torchrun` for distributed training:
+
+```bash
+torchrun --standalone --nproc_per_node=4 classification/kronos_pretrain.py \
+    --data_dir /path/to/data \
+    --num_classes 2 \
+    --batch_size 24 \
+    --output_dir ./checkpoints \
+    --fp16
+```
+
+**Performance benchmarks:**
+- Single GPU (FP16): ~60-70 samples/second
+- 4× GPU (FP16): ~220 samples/second (3.5-4x speedup)
+
+### Training Speed Tips
+
+1. **Always use FP16** for 2x speedup
 2. Increase batch size if GPU memory allows
-3. Enable pin_memory (already enabled by default)
-4. Use FP16 for ~2x speedup
+3. Increase `--num_workers` for faster data loading (4-8 recommended)
+4. Use `--prefetch_factor 2-4` for overlapping CPU/GPU work
+5. Pin memory is enabled by default
 
 ## Troubleshooting
 
 ### Import Error: "model" module not found
 
-Make sure you're running from the Kronos repository directory or have added it to your Python path:
-
-```bash
-export PYTHONPATH=/path/to/Kronos:$PYTHONPATH
-```
-
-Or run from Kronos directory:
+Make sure you're running from the Kronos repository directory:
 
 ```bash
 cd /path/to/Kronos
-python /path/to/kronos_pretrain.py ...
+python classification/kronos_pretrain.py ...
+```
+
+Or set PYTHONPATH:
+
+```bash
+export PYTHONPATH=/path/to/Kronos:$PYTHONPATH
 ```
 
 ### CUDA Out of Memory
@@ -371,27 +475,63 @@ python /path/to/kronos_pretrain.py ...
 --max_context 256
 ```
 
-### Different Number of Features
+### Class Imbalance Warnings
 
-If your data has different columns:
+If you see severe class imbalance warnings, try:
 
-1. **Without volume**: Use `--no_volume`
-2. **Custom features**: Modify the `kronos_classification_base.py` to handle your specific feature set
-
-## Model Checkpoints
-
-Each checkpoint directory contains:
-- `pytorch_model.bin`: Model weights and configuration
-- `training_state.bin`: Optimizer and scheduler state (for resuming training)
-- Tokenizer files from the original Kronos tokenizer
-
-To load a checkpoint:
-
-```python
-from kronos_classification_base import KronosClassificationModel
-
-model = KronosClassificationModel.from_pretrained('./checkpoints/best_model')
+```bash
+--class_balance oversample --loss_type focal
 ```
+
+This combines data-level and algorithm-level techniques.
+
+### Poor Performance on Minority Class
+
+Combine multiple techniques:
+
+```bash
+--class_balance oversample --loss_type focal --class_weights
+```
+
+Or use RL fine-tuning after supervised pretraining:
+
+```bash
+# First: supervised pretraining
+python classification/kronos_pretrain.py ... --output_dir ./supervised
+
+# Then: RL fine-tuning
+python classification/kronos_rl_finetune.py --model_path ./supervised/best_model ...
+```
+
+## Checkpoint Formats
+
+The model supports multiple checkpoint formats:
+
+### SafeTensors (Recommended)
+- **Format**: `.safetensors` + `config.json`
+- **Advantages**: Safe, fast, zero-copy loading
+- **Use**: Production deployment
+
+### PyTorch
+- **Format**: `pytorch_model.bin`
+- **Advantages**: Compatible with older code
+- **Use**: Legacy support
+
+### Both
+- **Format**: Saves both formats
+- **Use**: Maximum compatibility
+
+## Model Performance Metrics
+
+During training, the following metrics are tracked:
+
+- **Loss**: Cross-entropy or focal loss
+- **Accuracy**: Percentage of correct predictions
+- **F1 Score**: Weighted F1 score
+- **Precision**: Weighted precision
+- **Recall**: Weighted recall
+
+Metrics are computed on both validation and test sets.
 
 ## Citation
 

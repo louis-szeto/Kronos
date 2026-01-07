@@ -1,36 +1,14 @@
-# requirements.txt
-# Core dependencies for Kronos Classification Model
+# Requirements for Kronos Classification Model
+# Install with: pip install -r requirements.txt
 
-# PyTorch (install appropriate version for your CUDA)
-torch>=2.0.0
-torchvision>=0.15.0
+# Core dependencies (already in main Kronos requirements.txt)
+# torch>=2.0.0
+# numpy>=1.24.0
+# pandas>=2.0.0
+# safetensors>=0.6.2
+# transformers>=4.30.0
+# tqdm>=4.65.0
 
-# Transformers and Hugging Face
-transformers>=4.30.0
-accelerate>=0.20.0
-tokenizers>=0.13.0
-
-# Data processing
-numpy>=1.24.0
-pandas>=2.0.0
+# Additional dependencies for classification
 scikit-learn>=1.3.0
-
-# Training utilities
-tqdm>=4.65.0
-tensorboard>=2.13.0
-wandb>=0.15.0  # Optional: for experiment tracking
-
-# Distributed training
-deepspeed>=0.9.0  # Optional: for advanced optimization
-
-# Configuration
-pyyaml>=6.0
-omegaconf>=2.3.0
-
-# Utilities
-jsonlines>=3.1.0
-
-# Development
-pytest>=7.4.0
-black>=23.0.0
-flake8>=6.0.0
+accelerate>=0.20.0

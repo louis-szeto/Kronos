@@ -306,6 +306,9 @@ class KronosFineTuner:
         fp16: bool = False,
         freeze_backbone_epochs: int = 0,
         class_weights: Optional[torch.Tensor] = None,
+        device: str = None,
+        num_workers: int = 4,
+        prefetch_factor: int = 2,
     ):
         self.model = model
         self.train_dataset = train_dataset
@@ -326,18 +329,25 @@ class KronosFineTuner:
         self.fp16 = fp16
         self.freeze_backbone_epochs = freeze_backbone_epochs
         self.class_weights = class_weights
-        
+        self.num_workers = num_workers
+        self.prefetch_factor = prefetch_factor
+
         os.makedirs(output_dir, exist_ok=True)
-        
+
         self.is_distributed = local_rank != -1
         if self.is_distributed:
             torch.cuda.set_device(local_rank)
             self.device = torch.device("cuda", local_rank)
             self.model = self.model.to(self.device)
-            self.model = DDP(self.model, device_ids=[local_rank])
+            self.model = DDP(self.model, device_ids=[local_rank], find_unused_parameters=False)
         else:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            if device is None:
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            else:
+                self.device = torch.device(device)
             self.model = self.model.to(self.device)
+
+        print(f"Training on device: {self.device}")
         
         self._setup_dataloaders()
         self._setup_optimizer()
@@ -363,28 +373,34 @@ class KronosFineTuner:
             sampler=train_sampler,
             shuffle=(train_sampler is None),
             collate_fn=collate_fn,
-            num_workers=4,
-            pin_memory=True
+            num_workers=self.num_workers if not self.is_distributed else 4,
+            pin_memory=True,
+            prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
+            persistent_workers=True if self.num_workers > 0 else False,
         )
-        
+
         self.val_loader = DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
             sampler=val_sampler,
             shuffle=False,
             collate_fn=collate_fn,
-            num_workers=4,
-            pin_memory=True
+            num_workers=self.num_workers if not self.is_distributed else 4,
+            pin_memory=True,
+            prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
+            persistent_workers=True if self.num_workers > 0 else False,
         ) if self.val_dataset else None
-        
+
         self.test_loader = DataLoader(
             self.test_dataset,
             batch_size=self.batch_size,
             sampler=test_sampler,
             shuffle=False,
             collate_fn=collate_fn,
-            num_workers=4,
-            pin_memory=True
+            num_workers=self.num_workers if not self.is_distributed else 4,
+            pin_memory=True,
+            prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
+            persistent_workers=True if self.num_workers > 0 else False,
         ) if self.test_dataset else None
     
     def _setup_optimizer(self):
@@ -600,15 +616,42 @@ def main():
                        help="Method to handle class imbalance")
     parser.add_argument("--oversample_ratio", type=float, default=1.0,
                        help="Target ratio for minority class (1.0 = equal samples)")
-    parser.add_argument("--no_volume", action="store_true")
-    parser.add_argument("--fp16", action="store_true")
-    parser.add_argument("--local_rank", type=int, default=-1)
-    
+    parser.add_argument("--no_volume", action="store_true", help="Don't use volume/amount")
+    parser.add_argument("--fp16", action="store_true", help="Use mixed precision training (FP16)")
+    parser.add_argument("--local_rank", type=int, default=-1, help="Local rank for distributed training")
+    parser.add_argument("--device", type=str, default=None,
+                       help="Device to use (cuda:0, cuda:1, etc. or 'auto' for fastest available)")
+    parser.add_argument("--num_workers", type=int, default=4,
+                       help="Number of data loading workers (0 for single-threaded)")
+    parser.add_argument("--prefetch_factor", type=int, default=2,
+                       help="Number of batches to prefetch per worker")
+
     args = parser.parse_args()
-    
+
+    # Auto-detect fastest GPU if not in distributed mode
+    if args.local_rank == -1 and args.device is None:
+        if torch.cuda.is_available():
+            max_free_memory = 0
+            best_device = 0
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                free_memory = torch.cuda.mem_get_info(i)[0] / (1024**3)  # GB
+                print(f"GPU {i}: {props.name} ({props.total_memory / (1024**3):.1f}GB total, {free_memory:.1f}GB free)")
+                if free_memory > max_free_memory:
+                    max_free_memory = free_memory
+                    best_device = i
+            args.device = f"cuda:{best_device}"
+            print(f"Auto-selected GPU {best_device} with {max_free_memory:.1f}GB free memory")
+        else:
+            args.device = "cpu"
+
+    # Set device for single-GPU training
+    if args.local_rank == -1:
+        torch.cuda.set_device(int(args.device.split(":")[1]) if ":" in args.device else 0)
+
     if args.local_rank != -1:
         dist.init_process_group(backend='nccl')
-    
+
     from kronos_classification_base import KronosClassificationModel
     
     print(f"Loading pretrained model from {args.pretrained_checkpoint}...")
@@ -674,6 +717,9 @@ def main():
         local_rank=args.local_rank,
         fp16=args.fp16,
         class_weights=class_weights,
+        device=args.device,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
     )
     
     finetuner.train()

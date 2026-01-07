@@ -291,7 +291,7 @@ def collate_fn(batch):
 
 class KronosPretrainer:
     """Pretrainer for Kronos classification model with multi-GPU support."""
-    
+
     def __init__(
         self,
         model,
@@ -311,6 +311,10 @@ class KronosPretrainer:
         local_rank: int = -1,
         fp16: bool = False,
         class_weights: Optional[torch.Tensor] = None,
+        save_format: str = "safetensors",
+        device: str = None,
+        num_workers: int = 4,
+        prefetch_factor: int = 2,
     ):
         self.model = model
         self.train_dataset = train_dataset
@@ -329,19 +333,28 @@ class KronosPretrainer:
         self.local_rank = local_rank
         self.fp16 = fp16
         self.class_weights = class_weights
-        
+        self.save_format = save_format
+        self.num_workers = num_workers
+        self.prefetch_factor = prefetch_factor
+
         os.makedirs(output_dir, exist_ok=True)
-        
+
         # Setup distributed training
         self.is_distributed = local_rank != -1
         if self.is_distributed:
             torch.cuda.set_device(local_rank)
             self.device = torch.device("cuda", local_rank)
             self.model = self.model.to(self.device)
-            self.model = DDP(self.model, device_ids=[local_rank])
+            self.model = DDP(self.model, device_ids=[local_rank], find_unused_parameters=False)
         else:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            # Use specified device or auto-detect
+            if device is None:
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            else:
+                self.device = torch.device(device)
             self.model = self.model.to(self.device)
+
+        print(f"Training on device: {self.device}")
         
         self._setup_dataloaders()
         self._setup_optimizer()
@@ -367,18 +380,22 @@ class KronosPretrainer:
             sampler=train_sampler,
             shuffle=(train_sampler is None),
             collate_fn=collate_fn,
-            num_workers=4,
-            pin_memory=True
+            num_workers=self.num_workers if not self.is_distributed else 4,
+            pin_memory=True,
+            prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
+            persistent_workers=True if self.num_workers > 0 else False,
         )
-        
+
         self.val_loader = DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
             sampler=val_sampler,
             shuffle=False,
             collate_fn=collate_fn,
-            num_workers=4,
-            pin_memory=True
+            num_workers=self.num_workers if not self.is_distributed else 4,
+            pin_memory=True,
+            prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
+            persistent_workers=True if self.num_workers > 0 else False,
         ) if self.val_dataset else None
     
     def _setup_optimizer(self):
@@ -514,16 +531,16 @@ class KronosPretrainer:
         """Save model checkpoint."""
         save_path = os.path.join(self.output_dir, checkpoint_name)
         model_to_save = self.model.module if self.is_distributed else self.model
-        model_to_save.save_pretrained(save_path)
-        
+        model_to_save.save_pretrained(save_path, save_format=self.save_format)
+
         torch.save({
             'global_step': self.global_step,
             'best_val_loss': self.best_val_loss,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
         }, os.path.join(save_path, 'training_state.bin'))
-        
-        print(f"Checkpoint saved to {save_path}")
+
+        print(f"Checkpoint saved to {save_path} ({self.save_format} format)")
 
 
 def main():
@@ -542,7 +559,22 @@ def main():
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1)
     parser.add_argument("--pooling_strategy", type=str, default="mean",
                        choices=["mean", "last", "max", "attention"])
-    parser.add_argument("--train_split", type=float, default=0.8, 
+    parser.add_argument("--padding_strategy", type=str, default="right",
+                       choices=["right", "left", "both"],
+                       help="How to pad sequences shorter than min_context")
+    parser.add_argument("--min_context", type=int, default=20,
+                       help="Minimum sequence length (shorter will be padded)")
+    parser.add_argument("--num_exogenous", type=int, default=0,
+                       help="Number of exogenous features (0-1)")
+    parser.add_argument("--loss_type", type=str, default=None,
+                       choices=["cross_entropy", "focal", "label_smoothing"],
+                       help="Loss function type (None=auto)")
+    parser.add_argument("--label_smoothing", type=float, default=0.1,
+                       help="Label smoothing factor")
+    parser.add_argument("--save_format", type=str, default="safetensors",
+                       choices=["safetensors", "pytorch", "both"],
+                       help="Checkpoint save format")
+    parser.add_argument("--train_split", type=float, default=0.8,
                        help="Fraction of data for training")
     parser.add_argument("--val_split", type=float, default=0.1,
                        help="Fraction of data for validation")
@@ -552,14 +584,42 @@ def main():
     parser.add_argument("--oversample_ratio", type=float, default=1.0,
                        help="Target ratio for minority class (1.0 = equal samples)")
     parser.add_argument("--no_volume", action="store_true", help="Don't use volume/amount")
-    parser.add_argument("--fp16", action="store_true")
-    parser.add_argument("--local_rank", type=int, default=-1)
-    
+    parser.add_argument("--fp16", action="store_true", help="Use mixed precision training (FP16)")
+    parser.add_argument("--local_rank", type=int, default=-1, help="Local rank for distributed training")
+    parser.add_argument("--device", type=str, default=None,
+                       help="Device to use (cuda:0, cuda:1, etc. or 'auto' for fastest available)")
+    parser.add_argument("--num_workers", type=int, default=4,
+                       help="Number of data loading workers (0 for single-threaded)")
+    parser.add_argument("--prefetch_factor", type=int, default=2,
+                       help="Number of batches to prefetch per worker")
+
     args = parser.parse_args()
-    
+
+    # Auto-detect fastest GPU if not in distributed mode
+    if args.local_rank == -1 and args.device is None:
+        if torch.cuda.is_available():
+            # Find GPU with most free memory
+            max_free_memory = 0
+            best_device = 0
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                free_memory = torch.cuda.mem_get_info(i)[0] / (1024**3)  # GB
+                print(f"GPU {i}: {props.name} ({props.total_memory / (1024**3):.1f}GB total, {free_memory:.1f}GB free)")
+                if free_memory > max_free_memory:
+                    max_free_memory = free_memory
+                    best_device = i
+            args.device = f"cuda:{best_device}"
+            print(f"Auto-selected GPU {best_device} with {max_free_memory:.1f}GB free memory")
+        else:
+            args.device = "cpu"
+
+    # Set device for single-GPU training
+    if args.local_rank == -1:
+        torch.cuda.set_device(int(args.device.split(":")[1]) if ":" in args.device else 0)
+
     if args.local_rank != -1:
         dist.init_process_group(backend='nccl')
-    
+
     from kronos_classification_base import KronosClassificationModel
     
     print(f"Initializing model with {args.num_classes} classes...")
@@ -568,8 +628,13 @@ def main():
         tokenizer_path=args.tokenizer_path,
         num_classes=args.num_classes,
         max_context=args.max_context,
+        min_context=args.min_context,
         use_volume=not args.no_volume,
+        num_exogenous=args.num_exogenous,
         pooling_strategy=args.pooling_strategy,
+        padding_strategy=args.padding_strategy,
+        loss_type=args.loss_type,
+        label_smoothing=args.label_smoothing,
         freeze_backbone=False,
     )
     
@@ -616,6 +681,10 @@ def main():
         local_rank=args.local_rank,
         fp16=args.fp16,
         class_weights=class_weights,
+        save_format=args.save_format,
+        device=args.device,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor,
     )
     
     trainer.train()
