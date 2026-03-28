@@ -11,6 +11,8 @@ import numpy as np
 from typing import Optional, Dict, Any, Tuple, List
 import sys
 import os
+import hashlib
+import json
 from safetensors.torch import save_file as safe_save_file
 from safetensors.torch import load_file as safe_load_file
 
@@ -22,6 +24,40 @@ except ImportError:
     print("git clone https://github.com/shiyu-coder/Kronos.git")
     print("Then add the repository to your Python path or run from the Kronos directory")
     sys.exit(1)
+
+
+def _validate_checkpoint(path: str, expected_sha256: str = None) -> bool:
+    """Validate checkpoint file integrity.
+
+    Args:
+        path: Path to checkpoint file
+        expected_sha256: Optional expected SHA-256 hash. If None, only checks file is readable.
+
+    Returns:
+        True if valid
+
+    Raises:
+        ValueError: If file is corrupted or hash mismatch
+    """
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Checkpoint not found: {path}")
+
+    if os.path.getsize(path) == 0:
+        raise ValueError(f"Checkpoint file is empty: {path}")
+
+    if expected_sha256 is not None:
+        sha256 = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                sha256.update(chunk)
+        actual_hash = sha256.hexdigest()
+        if actual_hash != expected_sha256:
+            raise ValueError(
+                f"Checkpoint integrity check failed for {path}. "
+                f"Expected {expected_sha256}, got {actual_hash}"
+            )
+
+    return True
 
 
 class KronosClassificationModel(nn.Module):
@@ -319,6 +355,17 @@ class KronosClassificationModel(nn.Module):
         if missing_cols:
             raise ValueError(f"Missing required columns: {missing_cols}. Got: {df.columns.tolist()}")
 
+        # Validate OHLCV data
+        ohlcv_cols = [c for c in required_cols if c in ('open', 'high', 'low', 'close', 'volume', 'amount')]
+        ohlcv_data = df[ohlcv_cols]
+        if ohlcv_data.isnull().any().any():
+            raise ValueError(f"Input data contains NaN values in columns: {ohlcv_cols}")
+        if np.isinf(ohlcv_data.values).any():
+            raise ValueError(f"Input data contains infinite values in columns: {ohlcv_cols}")
+        price_cols = [c for c in ('open', 'high', 'low', 'close') if c in ohlcv_cols]
+        if (df[price_cols] < 0).any().any():
+            raise ValueError(f"Price columns contain negative values: {price_cols}")
+
         # Convert to numpy array
         data = df[required_cols].values
 
@@ -437,10 +484,13 @@ class KronosClassificationModel(nn.Module):
             with open(config_path, 'r') as f:
                 config = json.load(f)
         else:
-            # Try loading from pytorch_model.bin
+            # Try loading from pytorch_model.bin (legacy)
             pytorch_path = os.path.join(load_directory, 'pytorch_model.bin')
             if os.path.exists(pytorch_path):
-                checkpoint = torch.load(pytorch_path, map_location='cpu')
+                # SECURITY NOTE: weights_only=False uses pickle deserialization,
+                # which can execute arbitrary code. Only load checkpoints from trusted sources.
+                # Prefer the safetensors format (auto-detected below) for untrusted files.
+                checkpoint = torch.load(pytorch_path, map_location='cpu', weights_only=True)
                 config = checkpoint.get('config', {})
                 # Legacy format support
                 if 'num_classes' in checkpoint:
@@ -473,24 +523,26 @@ class KronosClassificationModel(nn.Module):
             label_smoothing=config.get('label_smoothing', 0.1),
         )
 
-        # Load weights
+        # Load weights (prefer safetensors for security)
         safetensors_path = os.path.join(load_directory, 'model.safetensors')
         pytorch_path = os.path.join(load_directory, 'pytorch_model.bin')
 
         if os.path.exists(safetensors_path):
-            # Load from safetensors
+            # Validate file integrity before loading
+            _validate_checkpoint(safetensors_path)
             state_dict = safe_load_file(safetensors_path)
             model.load_state_dict(state_dict)
             print(f"Model loaded from SafeTensors format: {load_directory}")
         elif os.path.exists(pytorch_path):
-            # Load from pytorch
-            if 'config' not in torch.load(pytorch_path, map_location='cpu'):
-                # Legacy format
-                checkpoint = torch.load(pytorch_path, map_location='cpu')
+            # Validate file integrity before loading
+            _validate_checkpoint(pytorch_path)
+            # SECURITY NOTE: weights_only=False uses pickle deserialization.
+            # Prefer safetensors format for untrusted checkpoints.
+            checkpoint = torch.load(pytorch_path, map_location='cpu', weights_only=True)
+            if 'model_state_dict' in checkpoint:
                 model.load_state_dict(checkpoint['model_state_dict'])
             else:
-                checkpoint = torch.load(pytorch_path, map_location='cpu')
-                model.load_state_dict(checkpoint['model_state_dict'])
+                raise ValueError(f"Invalid checkpoint format in {pytorch_path}")
             print(f"Model loaded from PyTorch format: {load_directory}")
         else:
             raise FileNotFoundError(f"No model weights found in {load_directory}")

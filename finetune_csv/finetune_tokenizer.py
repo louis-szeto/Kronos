@@ -274,7 +274,11 @@ def train_tokenizer(model, device, config, save_dir, logger):
                 save_msg = f"Best model saved to: {model_save_path} (validation loss: {best_val_loss:.4f})"
                 logger.info(save_msg)
                 print(save_msg)
-    
+
+        # Free GPU memory after each epoch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     return best_val_loss
 
 

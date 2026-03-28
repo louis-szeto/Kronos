@@ -524,6 +524,12 @@ class KronosPredictor:
         if df[self.price_cols + [self.vol_col, self.amt_vol]].isnull().values.any():
             raise ValueError("Input DataFrame contains NaN values in price or volume columns.")
 
+        if np.isinf(df[self.price_cols + [self.vol_col, self.amt_vol]].values).any():
+            raise ValueError("Input DataFrame contains infinite values in price or volume columns.")
+
+        if (df[self.price_cols] < 0).any().any():
+            raise ValueError("Price columns contain negative values.")
+
         x_time_df = calc_time_stamps(x_timestamp)
         y_time_df = calc_time_stamps(y_timestamp)
 
@@ -600,6 +606,12 @@ class KronosPredictor:
 
             if df[self.price_cols + [self.vol_col, self.amt_vol]].isnull().values.any():
                 raise ValueError(f"DataFrame at index {i} contains NaN values in price or volume columns.")
+
+            if np.isinf(df[self.price_cols + [self.vol_col, self.amt_vol]].values).any():
+                raise ValueError(f"DataFrame at index {i} contains infinite values in price or volume columns.")
+
+            if (df[self.price_cols] < 0).any().any():
+                raise ValueError(f"DataFrame at index {i} contains negative price values.")
 
             x_timestamp = x_timestamp_list[i]
             y_timestamp = y_timestamp_list[i]

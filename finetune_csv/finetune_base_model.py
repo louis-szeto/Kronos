@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import time
-import pickle
 import random
 import pandas as pd
 import numpy as np
@@ -50,8 +49,22 @@ class CustomKlineDataset(Dataset):
         print(f"[{data_type.upper()}] Data length: {len(self.data)}, Available samples: {self.n_samples}")
     
     def _load_and_preprocess_data(self):
-        df = pd.read_csv(self.data_path)
-        
+        try:
+            df = pd.read_csv(self.data_path)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Data file not found: {self.data_path}")
+        except pd.errors.EmptyDataError:
+            raise ValueError(f"Data file is empty: {self.data_path}")
+        except pd.errors.ParserError as e:
+            raise ValueError(f"Failed to parse CSV file {self.data_path}: {e}")
+
+        if 'timestamps' not in df.columns:
+            raise ValueError(f"CSV file must contain a 'timestamps' column. Got: {df.columns.tolist()}")
+
+        missing = set(self.feature_list) - set(df.columns)
+        if missing:
+            raise ValueError(f"CSV file missing required OHLCV columns: {missing}. Got: {df.columns.tolist()}")
+
         df['timestamps'] = pd.to_datetime(df['timestamps'])
         df = df.sort_values('timestamps').reset_index(drop=True)
         
@@ -68,6 +81,13 @@ class CustomKlineDataset(Dataset):
         if self.data.isnull().any().any():
             print("Warning: Missing values found in data, performing forward fill")
             self.data = self.data.fillna(method='ffill')
+
+        if np.isinf(self.data[self.feature_list].values).any():
+            raise ValueError(f"Data contains infinite values in feature columns. Check: {self.data_path}")
+
+        price_cols = ['open', 'high', 'low', 'close']
+        if (self.data[price_cols] < 0).any().any():
+            raise ValueError(f"Price columns contain negative values. Check: {self.data_path}")
         
         print(f"Original data time range: {self.timestamps.min()} to {self.timestamps.max()}")
         print(f"Original data total length: {len(df)} records")
@@ -360,7 +380,11 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
                 save_msg = f"Best model saved to: {model_save_path} (validation loss: {best_val_loss:.4f})"
                 logger.info(save_msg)
                 print(save_msg)
-    
+
+        # Free GPU memory after each epoch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
     return best_val_loss
 
 
