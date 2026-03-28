@@ -377,7 +377,10 @@ def analyze_checkpoint(checkpoint_path: str):
     
     training_state_path = os.path.join(checkpoint_path, 'training_state.bin')
     if os.path.exists(training_state_path):
-        training_state = torch.load(training_state_path, map_location='cpu')
+        # weights_only=False required: training_state.bin contains optimizer/scheduler
+        # state dicts with non-tensor Python objects that cannot be loaded with weights_only=True.
+        # Only load training state files produced by our own training code.
+        training_state = torch.load(training_state_path, map_location='cpu', weights_only=False)
         print("\nTraining State:")
         print(f"Global step: {training_state.get('global_step', 'N/A')}")
         print(f"Best validation metric: {training_state.get('best_val_metric', training_state.get('best_val_loss', 'N/A'))}")

@@ -80,7 +80,7 @@ class CustomKlineDataset(Dataset):
         
         if self.data.isnull().any().any():
             print("Warning: Missing values found in data, performing forward fill")
-            self.data = self.data.fillna(method='ffill')
+            self.data = self.data.ffill()
 
         if np.isinf(self.data[self.feature_list].values).any():
             raise ValueError(f"Data contains infinite values in feature columns. Check: {self.data_path}")
@@ -311,6 +311,13 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
             logits = (model.module if use_ddp else model)(token_in[0], token_in[1], batch_x_stamp[:, :-1, :])
             loss, s1_loss, s2_loss = (model.module if use_ddp else model).head.compute_loss(logits[0], logits[1], token_out[0], token_out[1])
             
+            loss_val = loss.item()
+            if not np.isfinite(loss_val):
+                logger.warning(f"Non-finite loss detected ({loss_val}) at epoch {epoch+1}, step {batch_idx+1}. Skipping batch.")
+                optimizer.zero_grad()
+                batch_idx_global += 1
+                continue
+
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_((model.module if use_ddp else model).parameters(), max_norm=3.0)
