@@ -1,3 +1,11 @@
+"""
+Kronos Basemodel Fine-tuning Training Script
+
+Fine-tunes the Kronos Predictor model on custom CSV time series data using
+the pre-trained KronosTokenizer for tokenization. Supports multi-GPU training
+via DistributedDataParallel (DDP) with time-based train/val/test splits.
+"""
+
 import os
 import sys
 import json
@@ -22,6 +30,13 @@ from config_loader import CustomFinetuneConfig
 
 
 class CustomKlineDataset(Dataset):
+    """
+    Custom dataset for K-line (candlestick) time series data.
+
+    Loads OHLCV data from CSV, applies time-based train/val/test splits,
+    and provides sliding window samples with z-score normalization.
+    Training samples use deterministic shuffling seeded per epoch for reproducibility.
+    """
     
     def __init__(self, data_path, data_type='train', lookback_window=90, predict_window=10, 
                  clip=5.0, seed=100, train_ratio=0.7, val_ratio=0.15, test_ratio=0.15):
@@ -391,6 +406,10 @@ def train_model(model, tokenizer, device, config, save_dir, logger):
         # Free GPU memory after each epoch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+    # Final GPU cleanup after all training
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     return best_val_loss
 

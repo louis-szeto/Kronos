@@ -371,6 +371,18 @@ def top_k_top_p_filtering(
 
 
 def sample_from_logits(logits, temperature=1.0, top_k=None, top_p=None, sample_logits=True):
+    """Sample tokens from logits with temperature and top-k/top-p filtering.
+
+    Args:
+        logits: Logits distribution of shape (batch_size, vocab_size).
+        temperature: Sampling temperature (higher = more random).
+        top_k: If > 0, keep only top-k tokens before sampling.
+        top_p: If < 1.0, keep tokens with cumulative probability >= top_p (nucleus sampling).
+        sample_logits: If True, sample from distribution; if False, take argmax.
+
+    Returns:
+        Sampled token indices of shape (batch_size, 1).
+    """
     logits = logits / temperature
     if top_k is not None or top_p is not None:
         if top_k > 0 or top_p < 1.0:

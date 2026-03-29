@@ -17,6 +17,9 @@ import numpy as np
 from typing import List, Dict, Optional
 import argparse
 import pickle
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class KronosTimeSeriesDataset(Dataset):
@@ -53,26 +56,26 @@ class KronosTimeSeriesDataset(Dataset):
         self.use_volume = use_volume
         self.class_balance = class_balance
         
-        print(f"Loading data from {data_path}...")
+        logger.info(f"Loading data from {data_path}...")
         self.data = self._load_json_data(data_path, train_split, val_split, split_type)
-        
+
         # Apply class balancing only for training split
         if split_type == 'train' and class_balance != 'none':
             self.data = self._apply_class_balancing(self.data, class_balance, oversample_ratio)
-        
-        print(f"Loaded {len(self.data)} samples for {split_type} split")
+
+        logger.info(f"Loaded {len(self.data)} samples for {split_type} split")
         self._print_class_distribution()
     
     def _print_class_distribution(self):
         """Print class distribution statistics."""
         from collections import Counter
         label_counts = Counter([sample['label'] for sample in self.data])
-        print(f"Class distribution: {dict(label_counts)}")
+        logger.info(f"Class distribution: {dict(label_counts)}")
         if len(label_counts) > 1:
             minority_class = min(label_counts, key=label_counts.get)
             majority_class = max(label_counts, key=label_counts.get)
             ratio = label_counts[majority_class] / label_counts[minority_class]
-            print(f"Class imbalance ratio: {ratio:.2f}:1 (majority:minority)")
+            logger.info(f"Class imbalance ratio: {ratio:.2f}:1 (majority:minority)")
     
     def _apply_class_balancing(self, data, method, oversample_ratio):
         """Apply class balancing technique."""
@@ -83,7 +86,7 @@ class KronosTimeSeriesDataset(Dataset):
         labels = [sample['label'] for sample in data]
         label_counts = Counter(labels)
         
-        print(f"\nOriginal distribution: {dict(label_counts)}")
+        logger.info(f"\nOriginal distribution: {dict(label_counts)}")
         
         if method == 'oversample':
             # Oversample minority classes
@@ -99,10 +102,10 @@ class KronosTimeSeriesDataset(Dataset):
                     # Oversample with replacement
                     oversampled = random.choices(class_samples, k=target_count)
                     balanced_data.extend(oversampled)
-                    print(f"Class {label}: {len(class_samples)} -> {target_count} (oversampled)")
+                    logger.info(f"Class {label}: {len(class_samples)} -> {target_count} (oversampled)")
                 else:
                     balanced_data.extend(class_samples)
-                    print(f"Class {label}: {len(class_samples)} (kept as is)")
+                    logger.info(f"Class {label}: {len(class_samples)} (kept as is)")
             
             random.shuffle(balanced_data)
             return balanced_data
@@ -119,10 +122,10 @@ class KronosTimeSeriesDataset(Dataset):
                     # Undersample randomly
                     undersampled = random.sample(class_samples, min_count)
                     balanced_data.extend(undersampled)
-                    print(f"Class {label}: {len(class_samples)} -> {min_count} (undersampled)")
+                    logger.info(f"Class {label}: {len(class_samples)} -> {min_count} (undersampled)")
                 else:
                     balanced_data.extend(class_samples)
-                    print(f"Class {label}: {len(class_samples)} (kept as is)")
+                    logger.info(f"Class {label}: {len(class_samples)} (kept as is)")
             
             random.shuffle(balanced_data)
             return balanced_data
@@ -166,7 +169,7 @@ class KronosTimeSeriesDataset(Dataset):
         else:
             json_files = [data_path]
         
-        print(f"Found {len(json_files)} JSON files")
+        logger.info(f"Found {len(json_files)} JSON files")
         
         # Load all samples from all files
         for json_file in json_files:
@@ -202,7 +205,7 @@ class KronosTimeSeriesDataset(Dataset):
                     'timestamps': timestamps
                 })
         
-        print(f"Total samples loaded: {len(all_samples)}")
+        logger.info(f"Total samples loaded: {len(all_samples)}")
         
         # Shuffle and split data
         random.seed(42)
@@ -336,6 +339,8 @@ class KronosPretrainer:
         self.save_format = save_format
         self.num_workers = num_workers
         self.prefetch_factor = prefetch_factor
+        self.patience = 3  # Early stopping patience: stop if val_loss doesn't improve for N epochs
+        self.epochs_without_improvement = 0
 
         os.makedirs(output_dir, exist_ok=True)
 
@@ -354,7 +359,7 @@ class KronosPretrainer:
                 self.device = torch.device(device)
             self.model = self.model.to(self.device)
 
-        print(f"Training on device: {self.device}")
+        logger.info(f"Training on device: {self.device}")
         
         self._setup_dataloaders()
         self._setup_optimizer()
@@ -428,24 +433,42 @@ class KronosPretrainer:
         )
     
     def train(self):
-        """Main training loop."""
-        print(f"Starting pretraining for {self.num_epochs} epochs...")
-        print(f"Total training steps: {len(self.train_loader) * self.num_epochs}")
-        
+        """Main training loop with early stopping."""
+        logger.info(f"Starting pretraining for {self.num_epochs} epochs...")
+        logger.info(f"Total training steps: {len(self.train_loader) * self.num_epochs}")
+
         for epoch in range(self.num_epochs):
-            print(f"\nEpoch {epoch + 1}/{self.num_epochs}")
+            logger.info(f"\nEpoch {epoch + 1}/{self.num_epochs}")
             self._train_epoch(epoch)
-            
+
             if self.val_loader and (self.local_rank <= 0):
                 val_loss = self._evaluate()
-                print(f"Validation Loss: {val_loss:.4f}")
-                
+                logger.info(f"Validation Loss: {val_loss:.4f}")
+
                 if val_loss < self.best_val_loss:
                     self.best_val_loss = val_loss
+                    self.epochs_without_improvement = 0
                     self._save_checkpoint("best_model")
-            
+                else:
+                    self.epochs_without_improvement += 1
+                    logger.info(f"No improvement for {self.epochs_without_improvement} epoch(s) "
+                                f"(patience={self.patience})")
+
+                    if self.epochs_without_improvement >= self.patience:
+                        logger.info(f"Early stopping triggered after {epoch + 1} epochs. "
+                                    f"Best val loss: {self.best_val_loss:.4f}")
+                        break
+
             if self.local_rank <= 0:
                 self._save_checkpoint(f"epoch_{epoch + 1}")
+
+            # Free GPU memory after each epoch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # Final GPU cleanup
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
     
     def _train_epoch(self, epoch: int):
         """Train for one epoch."""
@@ -511,7 +534,7 @@ class KronosPretrainer:
                     self.global_step % self.eval_steps == 0 and 
                     self.local_rank <= 0):
                     val_loss = self._evaluate()
-                    print(f"\nStep {self.global_step} - Validation Loss: {val_loss:.4f}")
+                    logger.info(f"\nStep {self.global_step} - Validation Loss: {val_loss:.4f}")
                     self.model.train()
     
     def _evaluate(self) -> float:
@@ -540,7 +563,7 @@ class KronosPretrainer:
             'scheduler_state_dict': self.scheduler.state_dict(),
         }, os.path.join(save_path, 'training_state.bin'))
 
-        print(f"Checkpoint saved to {save_path} ({self.save_format} format)")
+        logger.info(f"Checkpoint saved to {save_path} ({self.save_format} format)")
 
 
 def main():
@@ -604,12 +627,12 @@ def main():
             for i in range(torch.cuda.device_count()):
                 props = torch.cuda.get_device_properties(i)
                 free_memory = torch.cuda.mem_get_info(i)[0] / (1024**3)  # GB
-                print(f"GPU {i}: {props.name} ({props.total_memory / (1024**3):.1f}GB total, {free_memory:.1f}GB free)")
+                logger.info(f"GPU {i}: {props.name} ({props.total_memory / (1024**3):.1f}GB total, {free_memory:.1f}GB free)")
                 if free_memory > max_free_memory:
                     max_free_memory = free_memory
                     best_device = i
             args.device = f"cuda:{best_device}"
-            print(f"Auto-selected GPU {best_device} with {max_free_memory:.1f}GB free memory")
+            logger.info(f"Auto-selected GPU {best_device} with {max_free_memory:.1f}GB free memory")
         else:
             args.device = "cpu"
 
@@ -622,21 +645,26 @@ def main():
 
     from kronos_classification_base import KronosClassificationModel
     
-    print(f"Initializing model with {args.num_classes} classes...")
-    model = KronosClassificationModel(
-        kronos_model_path=args.kronos_model,
-        tokenizer_path=args.tokenizer_path,
-        num_classes=args.num_classes,
-        max_context=args.max_context,
-        min_context=args.min_context,
-        use_volume=not args.no_volume,
-        num_exogenous=args.num_exogenous,
-        pooling_strategy=args.pooling_strategy,
-        padding_strategy=args.padding_strategy,
-        loss_type=args.loss_type,
-        label_smoothing=args.label_smoothing,
-        freeze_backbone=False,
-    )
+    logger.info(f"Initializing model with {args.num_classes} classes...")
+    try:
+        model = KronosClassificationModel(
+            kronos_model_path=args.kronos_model,
+            tokenizer_path=args.tokenizer_path,
+            num_classes=args.num_classes,
+            max_context=args.max_context,
+            min_context=args.min_context,
+            use_volume=not args.no_volume,
+            num_exogenous=args.num_exogenous,
+            pooling_strategy=args.pooling_strategy,
+            padding_strategy=args.padding_strategy,
+            loss_type=args.loss_type,
+            label_smoothing=args.label_smoothing,
+            freeze_backbone=False,
+        )
+    except (OSError, ConnectionError) as e:
+        logger.error(f"Failed to download model from HuggingFace Hub: {e}")
+        logger.error("Check your network connection and verify model paths.")
+        raise
     
     train_dataset = KronosTimeSeriesDataset(
         args.data_dir,
@@ -666,7 +694,7 @@ def main():
     class_weights = None
     if args.class_balance == 'class_weights':
         class_weights = train_dataset.get_class_weights()
-        print(f"Using class weights: {class_weights}")
+        logger.info(f"Using class weights: {class_weights}")
     
     trainer = KronosPretrainer(
         model=model,
@@ -688,7 +716,7 @@ def main():
     )
     
     trainer.train()
-    print("Pretraining completed!")
+    logger.info("Pretraining completed!")
 
 
 if __name__ == "__main__":

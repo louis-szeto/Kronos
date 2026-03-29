@@ -1,3 +1,14 @@
+"""
+Kronos Sequential Fine-tuning Pipeline
+
+Orchestrates sequential fine-tuning of the Kronos model:
+  1. Tokenizer fine-tuning phase (optional)
+  2. Basemodel (Predictor) fine-tuning phase (optional)
+
+Supports multi-GPU training via DistributedDataParallel (DDP)
+and can skip completed phases with --skip-existing.
+"""
+
 import os
 import sys
 import time
@@ -16,6 +27,13 @@ from finetune_base_model import train_model, create_dataloaders, setup_logging a
 
 
 class SequentialTrainer:
+    """
+    Orchestrates sequential fine-tuning of Kronos Tokenizer and Predictor.
+
+    Manages the two-phase training pipeline: first fine-tunes the tokenizer
+    on custom data, then fine-tunes the predictor using the fine-tuned tokenizer.
+    Supports distributed training, phase skipping, and checkpoint recovery.
+    """
     
     def __init__(self, config_path: str = None):
         self.config = CustomFinetuneConfig(config_path)
@@ -313,7 +331,9 @@ class SequentialTrainer:
             return False
         
         finally:
-            pass
+            # Free GPU memory after training
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
 
 def main():

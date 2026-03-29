@@ -13,8 +13,11 @@ import sys
 import os
 import hashlib
 import json
+import logging
 from safetensors.torch import save_file as safe_save_file
 from safetensors.torch import load_file as safe_load_file
+
+logger = logging.getLogger(__name__)
 
 # Import Kronos components
 try:
@@ -113,11 +116,23 @@ class KronosClassificationModel(nn.Module):
         """
         super().__init__()
 
-        print(f"Loading Kronos tokenizer from {tokenizer_path}...")
-        self.tokenizer = KronosTokenizer.from_pretrained(tokenizer_path)
+        logger.info(f"Loading Kronos tokenizer from {tokenizer_path}...")
+        try:
+            self.tokenizer = KronosTokenizer.from_pretrained(tokenizer_path)
+        except (OSError, ConnectionError) as e:
+            raise RuntimeError(
+                f"Failed to load Kronos tokenizer from '{tokenizer_path}'. "
+                f"Check network connectivity and model path. Error: {e}"
+            ) from e
 
-        print(f"Loading Kronos backbone from {kronos_model_path}...")
-        self.backbone = Kronos.from_pretrained(kronos_model_path)
+        logger.info(f"Loading Kronos backbone from {kronos_model_path}...")
+        try:
+            self.backbone = Kronos.from_pretrained(kronos_model_path)
+        except (OSError, ConnectionError) as e:
+            raise RuntimeError(
+                f"Failed to load Kronos backbone from '{kronos_model_path}'. "
+                f"Check network connectivity and model path. Error: {e}"
+            ) from e
 
         # Store configuration
         self.max_context = max_context
@@ -136,7 +151,7 @@ class KronosClassificationModel(nn.Module):
 
         # Freeze backbone if requested
         if freeze_backbone:
-            print("Freezing backbone parameters...")
+            logger.info("Freezing backbone parameters...")
             for param in self.backbone.parameters():
                 param.requires_grad = False
 
@@ -160,9 +175,9 @@ class KronosClassificationModel(nn.Module):
             nn.Linear(classifier_hidden_size, num_classes)
         )
 
-        print(f"Classification head initialized with {num_classes} classes")
-        print(f"Input dimensions: {self.d_in} (OHLC{'V' if use_volume else ''}{' + ' + str(num_exogenous) if num_exogenous > 0 else ''})")
-        print(f"Pooling strategy: {pooling_strategy}, Padding: {padding_strategy}")
+        logger.info(f"Classification head initialized with {num_classes} classes")
+        logger.info(f"Input dimensions: {self.d_in} (OHLC{'V' if use_volume else ''}{' + ' + str(num_exogenous) if num_exogenous > 0 else ''})")
+        logger.info(f"Pooling strategy: {pooling_strategy}, Padding: {padding_strategy}")
     
     def _pool_sequence(
         self,
@@ -447,7 +462,7 @@ class KronosClassificationModel(nn.Module):
                 'model_state_dict': self.state_dict(),
                 'config': config,
             }, os.path.join(save_directory, 'pytorch_model.bin'))
-            print(f"Model saved in PyTorch format to {save_directory}")
+            logger.info(f"Model saved in PyTorch format to {save_directory}")
 
         if save_format in ["safetensors", "both"]:
             # Save model weights in safetensors format
@@ -463,7 +478,7 @@ class KronosClassificationModel(nn.Module):
             import json
             with open(os.path.join(save_directory, 'config.json'), 'w') as f:
                 json.dump(config, f, indent=2)
-            print(f"Model saved in SafeTensors format to {save_directory}")
+            logger.info(f"Model saved in SafeTensors format to {save_directory}")
 
     @classmethod
     def from_pretrained(
@@ -532,7 +547,7 @@ class KronosClassificationModel(nn.Module):
             _validate_checkpoint(safetensors_path)
             state_dict = safe_load_file(safetensors_path)
             model.load_state_dict(state_dict)
-            print(f"Model loaded from SafeTensors format: {load_directory}")
+            logger.info(f"Model loaded from SafeTensors format: {load_directory}")
         elif os.path.exists(pytorch_path):
             # Validate file integrity before loading
             _validate_checkpoint(pytorch_path)
@@ -543,7 +558,7 @@ class KronosClassificationModel(nn.Module):
                 model.load_state_dict(checkpoint['model_state_dict'])
             else:
                 raise ValueError(f"Invalid checkpoint format in {pytorch_path}")
-            print(f"Model loaded from PyTorch format: {load_directory}")
+            logger.info(f"Model loaded from PyTorch format: {load_directory}")
         else:
             raise FileNotFoundError(f"No model weights found in {load_directory}")
 
