@@ -30,6 +30,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "finetune_csv"))
 # Force CPU for every test
 os.environ.setdefault("CUDA_VISIBLE_DEVICES", "")
 
+
 # ---------------------------------------------------------------------------
 # Small mock Kronos backbone / tokenizer used throughout tests
 # ---------------------------------------------------------------------------
@@ -53,7 +54,6 @@ class MockKronosBackbone(nn.Module):
     def forward(self, input_ids, output_hidden_states=False, **kwargs):
         x = self.embedding(input_ids)
         x = self.linear(x)
-        # KronosClassificationModel expects outputs.hidden_states[-1]
         Output = type("Output", (), {"hidden_states": (x,)})
         return Output()
 
@@ -66,7 +66,6 @@ class MockKronosTokenizer:
     """Minimal tokenizer stand-in."""
 
     def encode(self, data, timestamps=None):
-        # Return a fixed-length token sequence based on data length
         if hasattr(data, 'shape'):
             length = data.shape[0]
         else:
@@ -214,10 +213,15 @@ def sample_yaml_config(tmp_path):
             "seed": 42,
             "tokenizer_learning_rate": 1e-4,
             "predictor_learning_rate": 1e-4,
+            "adam_beta1": 0.9,
+            "adam_beta2": 0.95,
+            "adam_weight_decay": 0.1,
+            "accumulation_steps": 1,
         },
         "model_paths": {
             "exp_name": "test_exp",
             "base_path": str(tmp_path / "output"),
+            "base_save_path": str(tmp_path / "output" / "test_exp"),
             "pretrained_tokenizer": str(tmp_path / "dummy_tokenizer"),
             "pretrained_predictor": str(tmp_path / "dummy_predictor"),
             "tokenizer_save_name": "tokenizer",

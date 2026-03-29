@@ -16,7 +16,6 @@ def sample_yaml_config(tmp_path):
             "data_path": str(tmp_path / "data.csv"),
             "lookback_window": 30,
             "predict_window": 5,
-            "max_context": 64,
             "clip": 5.0,
             "train_ratio": 0.7,
             "val_ratio": 0.15,
@@ -39,6 +38,7 @@ def sample_yaml_config(tmp_path):
         "model_paths": {
             "exp_name": "test_exp",
             "base_path": str(tmp_path / "output"),
+            "base_save_path": str(tmp_path / "output" / "test_exp"),
             "pretrained_tokenizer": str(tmp_path / "dummy_tokenizer"),
             "pretrained_predictor": str(tmp_path / "dummy_predictor"),
             "tokenizer_save_name": "tokenizer",
@@ -50,7 +50,6 @@ def sample_yaml_config(tmp_path):
             "description": "test run",
             "train_tokenizer": True,
             "train_basemodel": True,
-            "skip_existing": False,
         },
         "device": {"use_cuda": False, "device_id": 0},
         "distributed": {"use_ddp": False},
