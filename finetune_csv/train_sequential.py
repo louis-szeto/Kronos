@@ -12,6 +12,7 @@ and can skip completed phases with --skip-existing.
 import os
 import sys
 import time
+import logging
 import argparse
 import torch
 import torch.nn as nn
@@ -373,7 +374,7 @@ def main():
                 dist.barrier()
                 dist.destroy_process_group()
             except Exception:
-                pass
+                logging.warning("Failed to clean up distributed process group", exc_info=True)
         sys.exit(1)
 
 
