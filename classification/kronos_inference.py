@@ -420,13 +420,34 @@ def analyze_checkpoint(checkpoint_path: str):
     
     training_state_path = os.path.join(checkpoint_path, 'training_state.bin')
     if os.path.exists(training_state_path):
-        # weights_only=False required: training_state.bin contains optimizer/scheduler
-        # state dicts with non-tensor Python objects that cannot be loaded with weights_only=True.
-        # Only load training state files produced by our own training code.
-        training_state = torch.load(training_state_path, map_location='cpu', weights_only=False)
-        print("\nTraining State:")
-        print(f"Global step: {training_state.get('global_step', 'N/A')}")
-        print(f"Best validation metric: {training_state.get('best_val_metric', training_state.get('best_val_loss', 'N/A'))}")
+        # Verify SHA-256 hash before loading (SEC-2)
+        hash_path = training_state_path + '.sha256'
+        if os.path.exists(hash_path):
+            import hashlib
+            sha256 = hashlib.sha256()
+            with open(training_state_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(8192), b''):
+                    sha256.update(chunk)
+            actual_hash = sha256.hexdigest()
+            with open(hash_path, 'r') as f:
+                expected_hash = f.read().strip()
+            if actual_hash != expected_hash:
+                print(f"\nWARNING: training_state.bin integrity check FAILED!")
+                print(f"  Expected: {expected_hash}")
+                print(f"  Actual:   {actual_hash}")
+                print(f"  File may be tampered. Skipping training state load.")
+            else:
+                # weights_only=False required: training_state.bin contains optimizer/scheduler
+                # state dicts with non-tensor Python objects that cannot be loaded with weights_only=True.
+                # Only load training state files produced by our own training code.
+                training_state = torch.load(training_state_path, map_location='cpu', weights_only=False)
+                print("\nTraining State:")
+                print(f"Global step: {training_state.get('global_step', 'N/A')}")
+                print(f"Best validation metric: {training_state.get('best_val_metric', training_state.get('best_val_loss', 'N/A'))}")
+                print(f"Integrity: SHA-256 verified")
+        else:
+            print("\nWARNING: No .sha256 sidecar file for training_state.bin. "
+                  "Cannot verify integrity. Skipping load.")
     
     print("\nModel Configuration:")
     print(f"Number of classes: {model.num_classes}")

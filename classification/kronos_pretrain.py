@@ -18,6 +18,7 @@ from typing import List, Dict, Optional
 import argparse
 import pickle
 import logging
+import hashlib
 
 logger = logging.getLogger(__name__)
 
@@ -556,12 +557,21 @@ class KronosPretrainer:
         model_to_save = self.model.module if self.is_distributed else self.model
         model_to_save.save_pretrained(save_path, save_format=self.save_format)
 
+        ts_path = os.path.join(save_path, 'training_state.bin')
         torch.save({
             'global_step': self.global_step,
             'best_val_loss': self.best_val_loss,
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
-        }, os.path.join(save_path, 'training_state.bin'))
+        }, ts_path)
+
+        # Write SHA-256 hash sidecar for integrity verification (SEC-2)
+        sha256 = hashlib.sha256()
+        with open(ts_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                sha256.update(chunk)
+        with open(ts_path + '.sha256', 'w') as f:
+            f.write(sha256.hexdigest())
 
         logger.info(f"Checkpoint saved to {save_path} ({self.save_format} format)")
 
