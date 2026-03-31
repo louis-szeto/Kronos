@@ -403,6 +403,24 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context
         x = torch.clip(x, -clip, clip)
 
         device = x.device
+
+        # MEM-1: Guard against OOM from batch * sample_count expansion
+        if x.is_cuda and sample_count > 1:
+            free_mem = torch.cuda.mem_get_info(device)[0]
+            param_mem = sum(p.numel() * p.element_size() for p in model.parameters())
+            seq_len = x.size(1)
+            per_seq_est = seq_len * model.d_model * model.n_layers * 16  # conservative bytes
+            total_est = param_mem + x.size(0) * sample_count * per_seq_est
+            if total_est > free_mem:
+                # Process samples sequentially and average
+                results = []
+                for _ in range(sample_count):
+                    results.append(auto_regressive_inference(
+                        tokenizer, model, x, x_stamp, y_stamp, max_context, pred_len,
+                        clip, T, top_k, top_p, sample_count=1, verbose=verbose
+                    ))
+                return np.mean(results, axis=0)
+
         x = x.unsqueeze(1).repeat(1, sample_count, 1, 1).reshape(-1, x.size(1), x.size(2)).to(device)
         x_stamp = x_stamp.unsqueeze(1).repeat(1, sample_count, 1, 1).reshape(-1, x_stamp.size(1), x_stamp.size(2)).to(device)
         y_stamp = y_stamp.unsqueeze(1).repeat(1, sample_count, 1, 1).reshape(-1, y_stamp.size(1), y_stamp.size(2)).to(device)
