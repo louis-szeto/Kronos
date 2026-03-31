@@ -501,13 +501,25 @@ class KronosPretrainer:
                 with torch.cuda.amp.autocast():
                     outputs = self.model(**batch)
                     loss = outputs['loss'] / self.gradient_accumulation_steps
+                # STA-2: NaN/Inf loss guard
+                loss_val = loss.item()
+                if not np.isfinite(loss_val):
+                    logger.warning(f"Non-finite loss ({loss_val}) at step {step+1}. Skipping batch.")
+                    self.optimizer.zero_grad()
+                    continue
                 self.scaler.scale(loss).backward()
             else:
                 outputs = self.model(**batch)
                 loss = outputs['loss'] / self.gradient_accumulation_steps
+                # STA-2: NaN/Inf loss guard
+                loss_val = loss.item()
+                if not np.isfinite(loss_val):
+                    logger.warning(f"Non-finite loss ({loss_val}) at step {step+1}. Skipping batch.")
+                    self.optimizer.zero_grad()
+                    continue
                 loss.backward()
-            
-            epoch_loss += loss.item() * self.gradient_accumulation_steps
+
+            epoch_loss += loss_val * self.gradient_accumulation_steps
             
             if (step + 1) % self.gradient_accumulation_steps == 0:
                 if self.fp16:

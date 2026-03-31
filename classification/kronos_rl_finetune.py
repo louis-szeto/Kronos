@@ -20,9 +20,12 @@ from typing import List, Dict, Optional
 import argparse
 import json
 import hashlib
+import logging
 from collections import Counter
 import glob
 import random
+
+logger = logging.getLogger(__name__)
 
 
 # Import the dataset class from pretrain script
@@ -305,6 +308,12 @@ class PolicyGradientFinetuner:
                     # Compute policy loss
                     loss = self.compute_policy_loss(logits, labels, rewards) / self.gradient_accumulation_steps
 
+                # STA-2: NaN/Inf loss guard
+                loss_val = loss.item()
+                if not np.isfinite(loss_val):
+                    logger.warning(f"Non-finite loss ({loss_val}) at step {step+1}. Skipping batch.")
+                    self.optimizer.zero_grad()
+                    continue
                 self.scaler.scale(loss).backward()
             else:
                 outputs = self.model(**batch, return_dict=True)
@@ -316,9 +325,15 @@ class PolicyGradientFinetuner:
 
                 # Compute policy loss
                 loss = self.compute_policy_loss(logits, labels, rewards) / self.gradient_accumulation_steps
+                # STA-2: NaN/Inf loss guard
+                loss_val = loss.item()
+                if not np.isfinite(loss_val):
+                    logger.warning(f"Non-finite loss ({loss_val}) at step {step+1}. Skipping batch.")
+                    self.optimizer.zero_grad()
+                    continue
                 loss.backward()
 
-            epoch_loss += loss.item() * self.gradient_accumulation_steps
+            epoch_loss += loss_val * self.gradient_accumulation_steps
             epoch_reward += rewards.mean().item()
             num_batches += 1
 
