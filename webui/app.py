@@ -9,20 +9,53 @@ from flask_cors import CORS
 import sys
 import warnings
 import datetime
+import secrets
+import logging
+from pathlib import Path
+from functools import wraps
 warnings.filterwarnings('ignore')
 
 # Add project root directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Security: structured logging, no credentials in output
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 try:
     from model import Kronos, KronosTokenizer, KronosPredictor
     MODEL_AVAILABLE = True
 except ImportError:
     MODEL_AVAILABLE = False
-    print("Warning: Kronos model cannot be imported, will use simulated data for demonstration")
+    logger.warning("Kronos model cannot be imported, will use simulated data for demonstration")
 
 app = Flask(__name__)
-CORS(app)
+# Security: restrict CORS to known origins (configure via KRONOS_ALLOWED_ORIGINS env var)
+_allowed_origins = os.environ.get('KRONOS_ALLOWED_ORIGINS', '').split(',') if os.environ.get('KRONOS_ALLOWED_ORIGINS') else None
+if _allowed_origins:
+    CORS(app, origins=[o.strip() for o in _allowed_origins if o.strip()])
+else:
+    logger.warning("CORS is open (no KRONOS_ALLOWED_ORIGINS set). Restrict in production!")
+
+# Security: API key for endpoint protection
+API_KEY = os.environ.get('KRONOS_API_KEY')
+if not API_KEY:
+    API_KEY = secrets.token_urlsafe(32)
+    logger.warning("No KRONOS_API_KEY set. Generated ephemeral key (changes on restart). Set KRONOS_API_KEY env var for production!")
+
+def require_api_key(f):
+    """Decorator: require X-API-Key header for API endpoints."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        key = request.headers.get('X-API-Key')
+        if not key or not secrets.compare_digest(key, API_KEY):
+            return jsonify({'error': 'Unauthorized'}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+# Security: allowed data directory for file operations
+DATA_DIR = Path(os.environ.get('KRONOS_DATA_DIR', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data'))).resolve()
+RESULTS_DIR = Path(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prediction_results')).resolve()
 
 # Global variables to store models
 tokenizer = None
@@ -76,12 +109,19 @@ def load_data_files():
     return data_files
 
 def load_data_file(file_path):
-    """Load data file"""
+    """Load data file with path traversal protection."""
     try:
-        if file_path.endswith('.csv'):
-            df = pd.read_csv(file_path)
-        elif file_path.endswith('.feather'):
-            df = pd.read_feather(file_path)
+        # Security: resolve and validate path is within allowed directory
+        resolved = Path(file_path).resolve()
+        if not str(resolved).startswith(str(DATA_DIR)):
+            logger.warning("Blocked path traversal attempt")
+            return None, "Access denied"
+        if not resolved.exists():
+            return None, "File not found"
+        if resolved.suffix == '.csv':
+            df = pd.read_csv(resolved)
+        elif resolved.suffix == '.feather':
+            df = pd.read_feather(resolved)
         else:
             return None, "Unsupported file format"
         
@@ -339,6 +379,7 @@ def get_data_files():
     return jsonify(data_files)
 
 @app.route('/api/load-data', methods=['POST'])
+@require_api_key
 def load_data():
     """Load data file"""
     try:
@@ -399,9 +440,10 @@ def load_data():
         })
         
     except Exception as e:
-        return jsonify({'error': f'Failed to load data: {str(e)}'}), 500
+        return jsonify({'error': 'Failed to load data'}), 500
 
 @app.route('/api/predict', methods=['POST'])
+@require_api_key
 def predict():
     """Perform prediction"""
     try:
@@ -487,7 +529,7 @@ def predict():
                 )
                 
             except Exception as e:
-                return jsonify({'error': f'Kronos model prediction failed: {str(e)}'}), 500
+                return jsonify({'error': 'Prediction failed'}), 500
         else:
             return jsonify({'error': 'Kronos model not loaded, please load model first'}), 400
         
@@ -621,9 +663,10 @@ def predict():
         })
         
     except Exception as e:
-        return jsonify({'error': f'Prediction failed: {str(e)}'}), 500
+        return jsonify({'error': 'Prediction failed'}), 500
 
 @app.route('/api/load-model', methods=['POST'])
+@require_api_key
 def load_model():
     """Load Kronos model"""
     global tokenizer, model, predictor
@@ -660,7 +703,7 @@ def load_model():
         })
         
     except Exception as e:
-        return jsonify({'error': f'Model loading failed: {str(e)}'}), 500
+        return jsonify({'error': 'Model loading failed'}), 500
 
 @app.route('/api/available-models')
 def get_available_models():
