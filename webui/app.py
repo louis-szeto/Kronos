@@ -66,6 +66,22 @@ model = None
 predictor = None
 
 # Available model configurations
+# SEC-6: pinned HF revisions for supply-chain protection
+_HF_PINNED_REVISIONS = {
+    'NeoQuasar/Kronos-base': '2b55474',
+    'NeoQuasar/Kronos-small': '901c26c',
+    'NeoQuasar/Kronos-mini': 'f4e6869',
+    'NeoQuasar/Kronos-Tokenizer-base': '0e01173',
+    'NeoQuasar/Kronos-Tokenizer-2k': '26966d0',
+}
+
+def _get_pinned_revision(model_id):
+    """Return pinned commit hash for a HuggingFace model, or None."""
+    global_rev = os.environ.get('KRONOS_HF_REVISION')
+    if global_rev:
+        return global_rev
+    return _HF_PINNED_REVISIONS.get(model_id)
+
 AVAILABLE_MODELS = {
     'kronos-mini': {
         'name': 'Kronos-mini',
@@ -688,8 +704,8 @@ def load_model():
         model_config = AVAILABLE_MODELS[model_key]
         
         # Load tokenizer and model with pinned revisions (SEC-6)
-        _tok_rev = os.environ.get('KRONOS_TOKENIZER_REVISION')
-        _mdl_rev = os.environ.get('KRONOS_MODEL_REVISION')
+        _tok_rev = _get_pinned_revision(model_config['tokenizer_id'])
+        _mdl_rev = _get_pinned_revision(model_config['model_id'])
         tokenizer = KronosTokenizer.from_pretrained(
             model_config['tokenizer_id'],
             **({'revision': _tok_rev} if _tok_rev else {}),

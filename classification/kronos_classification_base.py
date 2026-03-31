@@ -19,6 +19,26 @@ from safetensors.torch import load_file as safe_load_file
 
 logger = logging.getLogger(__name__)
 
+# SEC-6: Pinned HuggingFace model revisions for supply-chain protection.
+# Override with KRONOS_HF_REVISION env var (applies to all models).
+_HF_PINNED_REVISIONS = {
+    "NeoQuasar/Kronos-base": "2b55474",
+    "NeoQuasar/Kronos-small": "901c26c",
+    "NeoQuasar/Kronos-mini": "f4e6869",
+    "NeoQuasar/Kronos-Tokenizer-base": "0e01173",
+    "NeoQuasar/Kronos-Tokenizer-2k": "26966d0",
+}
+
+
+def _get_pinned_revision(model_id: str):
+    """Return pinned commit hash for a HuggingFace model, or None for local paths."""
+    if os.path.isdir(model_id):
+        return None
+    global_rev = os.environ.get("KRONOS_HF_REVISION")
+    if global_rev:
+        return global_rev
+    return _HF_PINNED_REVISIONS.get(model_id)
+
 # Import Kronos components
 try:
     from model import Kronos, KronosTokenizer
@@ -120,7 +140,7 @@ class KronosClassificationModel(nn.Module):
         try:
             # SEC-6: pin revision to guard against supply-chain attacks on HF Hub.
             # Env var KRONOS_REVISION overrides the pinned default.
-            _tok_revision = os.environ.get('KRONOS_TOKENIZER_REVISION')
+            _tok_revision = _get_pinned_revision(tokenizer_path)
             self.tokenizer = KronosTokenizer.from_pretrained(
                 tokenizer_path,
                 **({'revision': _tok_revision} if _tok_revision else {}),
@@ -133,7 +153,7 @@ class KronosClassificationModel(nn.Module):
 
         logger.info(f"Loading Kronos backbone from {kronos_model_path}...")
         try:
-            _model_revision = os.environ.get('KRONOS_MODEL_REVISION')
+            _model_revision = _get_pinned_revision(kronos_model_path)
             self.backbone = Kronos.from_pretrained(
                 kronos_model_path,
                 **({'revision': _model_revision} if _model_revision else {}),
