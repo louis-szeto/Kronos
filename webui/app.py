@@ -36,7 +36,7 @@ if os.environ.get('KRONOS_ALLOWED_ORIGINS'):
     CORS(app, origins=_origins)
 else:
     # No KRONOS_ALLOWED_ORIGINS set → deny all cross-origin requests
- CORS(app, origins=[])
+       CORS(app, origins=[])
     logger.warning("KRONOS_ALLOWED_ORIGINS not set — CORS is deny-all. "
                       "Set KRONOS_ALLOWED_ORIGINS in production.")
 
@@ -687,9 +687,17 @@ def load_model():
         
         model_config = AVAILABLE_MODELS[model_key]
         
-        # Load tokenizer and model
-        tokenizer = KronosTokenizer.from_pretrained(model_config['tokenizer_id'])
-        model = Kronos.from_pretrained(model_config['model_id'])
+        # Load tokenizer and model with pinned revisions (SEC-6)
+        _tok_rev = os.environ.get('KRONOS_TOKENIZER_REVISION')
+        _mdl_rev = os.environ.get('KRONOS_MODEL_REVISION')
+        tokenizer = KronosTokenizer.from_pretrained(
+            model_config['tokenizer_id'],
+            **({'revision': _tok_rev} if _tok_rev else {}),
+        )
+        model = Kronos.from_pretrained(
+            model_config['model_id'],
+            **({'revision': _mdl_rev} if _mdl_rev else {}),
+        )
         
         # Create predictor
         predictor = KronosPredictor(model, tokenizer, device=device, max_context=model_config['context_length'])
