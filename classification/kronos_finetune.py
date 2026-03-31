@@ -205,15 +205,24 @@ class KronosTimeSeriesDataset(Dataset):
                 })
         
         print(f"Total samples loaded: {len(all_samples)}")
-        
-        # Shuffle and split data
-        random.seed(42)
-        random.shuffle(all_samples)
-        
+
+
+        # Chronological split: sort by first timestamp in each sample to
+        # prevent look-ahead bias (SEC-10). No shuffle — financial data must
+        # respect temporal ordering so future data never leaks into training.
+
+        def _first_ts(sample):
+            ts = sample.get('timestamps')
+            if ts is not None and len(ts) > 0:
+                return ts[0] if hasattr(ts, '__getitem__') else pd.Timestamp.min
+            return pd.Timestamp.min
+
+        all_samples.sort(key=_first_ts)
+
         n_total = len(all_samples)
         n_train = int(n_total * train_split)
         n_val = int(n_total * val_split)
-        
+
         if split_type == 'train':
             return all_samples[:n_train]
         elif split_type == 'val':

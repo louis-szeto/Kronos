@@ -30,12 +30,15 @@ except ImportError:
     logger.warning("Kronos model cannot be imported, will use simulated data for demonstration")
 
 app = Flask(__name__)
-# Security: restrict CORS to known origins (configure via KRONOS_ALLOWED_ORIGINS env var)
-_allowed_origins = os.environ.get('KRONOS_ALLOWED_ORIGINS', '').split(',') if os.environ.get('KRONOS_ALLOWED_ORIGINS') else None
-if _allowed_origins:
-    CORS(app, origins=[o.strip() for o in _allowed_origins if o.strip()])
+# Security: deny-all CORS by default; require explicit KRONOS_ALLOWED_ORIGINS env var (SEC-4)
+if os.environ.get('KRONOS_ALLOWED_ORIGINS'):
+    _origins = [o.strip() for o in os.environ['KRONOS_ALLOWED_ORIGINS'].split(',') if o.strip()]
+    CORS(app, origins=_origins)
 else:
-    logger.warning("CORS is open (no KRONOS_ALLOWED_ORIGINS set). Restrict in production!")
+    # No KRONOS_ALLOWED_ORIGINS set → deny all cross-origin requests
+ CORS(app, origins=[])
+    logger.warning("KRONOS_ALLOWED_ORIGINS not set — CORS is deny-all. "
+                      "Set KRONOS_ALLOWED_ORIGINS in production.")
 
 # Security: API key for endpoint protection
 API_KEY = os.environ.get('KRONOS_API_KEY')
