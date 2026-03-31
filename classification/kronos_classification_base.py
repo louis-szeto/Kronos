@@ -118,7 +118,13 @@ class KronosClassificationModel(nn.Module):
 
         logger.info(f"Loading Kronos tokenizer from {tokenizer_path}...")
         try:
-            self.tokenizer = KronosTokenizer.from_pretrained(tokenizer_path)
+            # SEC-6: pin revision to guard against supply-chain attacks on HF Hub.
+            # Env var KRONOS_REVISION overrides the pinned default.
+            _tok_revision = os.environ.get('KRONOS_TOKENIZER_REVISION')
+            self.tokenizer = KronosTokenizer.from_pretrained(
+                tokenizer_path,
+                **({'revision': _tok_revision} if _tok_revision else {}),
+            )
         except (OSError, ConnectionError) as e:
             raise RuntimeError(
                 f"Failed to load Kronos tokenizer from '{tokenizer_path}'. "
@@ -127,7 +133,11 @@ class KronosClassificationModel(nn.Module):
 
         logger.info(f"Loading Kronos backbone from {kronos_model_path}...")
         try:
-            self.backbone = Kronos.from_pretrained(kronos_model_path)
+            _model_revision = os.environ.get('KRONOS_MODEL_REVISION')
+            self.backbone = Kronos.from_pretrained(
+                kronos_model_path,
+                **({'revision': _model_revision} if _model_revision else {}),
+            )
         except (OSError, ConnectionError) as e:
             raise RuntimeError(
                 f"Failed to load Kronos backbone from '{kronos_model_path}'. "
