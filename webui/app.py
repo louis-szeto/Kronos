@@ -36,7 +36,7 @@ if os.environ.get('KRONOS_ALLOWED_ORIGINS'):
     CORS(app, origins=_origins)
 else:
     # No KRONOS_ALLOWED_ORIGINS set → deny all cross-origin requests
-       CORS(app, origins=[])
+    CORS(app, origins=[])
     logger.warning("KRONOS_ALLOWED_ORIGINS not set — CORS is deny-all. "
                       "Set KRONOS_ALLOWED_ORIGINS in production.")
 
