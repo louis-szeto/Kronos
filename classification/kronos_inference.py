@@ -7,7 +7,7 @@ import torch
 import numpy as np
 import pandas as pd
 from typing import List, Dict, Union, Optional
-import pickle
+import json
 from tqdm import tqdm
 import os
 import sys
@@ -187,16 +187,26 @@ class KronosClassificationPipeline:
     ):
         """
         Predict on data from file and save results.
-        
+
         Args:
-            input_file: Path to input pickle file
-            output_file: Path to save predictions (pickle)
+            input_file: Path to input JSON file
+            output_file: Path to save predictions (JSON)
             return_probs: Whether to save probabilities
         """
-        # Load data
-        with open(input_file, 'rb') as f:
-            data = pickle.load(f)
-        
+        # Load data from JSON file
+        with open(input_file, 'r') as f:
+            raw_data = json.load(f)
+
+        # Convert JSON records back to DataFrames
+        data = []
+        for item in raw_data:
+            df = pd.DataFrame(item['data'])
+            data.append({
+                'data': df,
+                'timestamps': pd.to_datetime(item['timestamps']) if item.get('timestamps') else None,
+                'label': item.get('label'),
+            })
+
         print(f"Loaded {len(data)} samples from {input_file}")
         
         # Extract DataFrames and timestamps
@@ -216,9 +226,20 @@ class KronosClassificationPipeline:
             for i, item in enumerate(data):
                 item['predicted_label'] = int(results[i])
         
-        # Save results
-        with open(output_file, 'wb') as f:
-            pickle.dump(data, f)
+        # Save results as JSON
+        output_data = []
+        for item in data:
+            record = {
+                'predicted_label': item.get('predicted_label'),
+            }
+            if 'predicted_probabilities' in item:
+                record['predicted_probabilities'] = item['predicted_probabilities']
+            if item.get('data') is not None:
+                record['data'] = item['data'].to_dict(orient='list') if isinstance(item['data'], pd.DataFrame) else item['data']
+            output_data.append(record)
+
+        with open(output_file, 'w') as f:
+            json.dump(output_data, f, indent=2, default=str)
         
         print(f"Predictions saved to {output_file}")
         return data
@@ -276,20 +297,32 @@ def create_sample_data():
         label = random.randint(0, 1)
         test_data.append({'data': df, 'label': label})
     
-    # Save files
-    with open('train_sample.pkl', 'wb') as f:
-        pickle.dump(train_data, f)
-    
-    with open('val_sample.pkl', 'wb') as f:
-        pickle.dump(val_data, f)
-    
-    with open('test_sample.pkl', 'wb') as f:
-        pickle.dump(test_data, f)
-    
+    # Save files as JSON
+    import json as _json
+
+    def _serialize_samples(samples):
+        """Convert sample DataFrames to JSON-serializable format."""
+        serialized = []
+        for s in samples:
+            serialized.append({
+                'data': s['data'].to_dict(orient='list'),
+                'label': s['label'],
+            })
+        return serialized
+
+    with open('train_sample.json', 'w') as f:
+        _json.dump(_serialize_samples(train_data), f, indent=2)
+
+    with open('val_sample.json', 'w') as f:
+        _json.dump(_serialize_samples(val_data), f, indent=2)
+
+    with open('test_sample.json', 'w') as f:
+        _json.dump(_serialize_samples(test_data), f, indent=2)
+
     print("Sample data files created:")
-    print("- train_sample.pkl (100 samples)")
-    print("- val_sample.pkl (20 samples)")
-    print("- test_sample.pkl (20 samples)")
+    print("- train_sample.json (100 samples)")
+    print("- val_sample.json (20 samples)")
+    print("- test_sample.json (20 samples)")
     print("\nEach sample contains:")
     print("  - 'data': DataFrame with columns [open, high, low, close, volume, amount]")
     print("  - 'label': Classification label (0 or 1)")
@@ -305,10 +338,10 @@ def convert_csv_to_classification_data(
 ):
     """
     Convert CSV file to classification dataset format.
-    
+
     Args:
         csv_file: Path to CSV file with OHLCV data
-        output_file: Output pickle file path
+        output_file: Output JSON file path (pickle extension auto-converted to .json)
         window_size: Size of sliding window
         label_column: Column name for labels (if available)
         label_func: Function to generate labels from data (if label_column is None)
@@ -348,9 +381,19 @@ def convert_csv_to_classification_data(
             'timestamps': timestamps
         })
     
-    # Save
-    with open(output_file, 'wb') as f:
-        pickle.dump(samples, f)
+    # Save as JSON
+    serialized = []
+    for s in samples:
+        record = {
+            'data': s['data'].to_dict(orient='list'),
+            'label': s['label'],
+        }
+        if s.get('timestamps') is not None:
+            record['timestamps'] = [str(ts) for ts in s['timestamps']]
+        serialized.append(record)
+
+    with open(output_file.replace('.pkl', '.json'), 'w') as f:
+        json.dump(serialized, f, indent=2)
     
     print(f"Created {len(samples)} samples from {csv_file}")
     print(f"Saved to {output_file}")
@@ -400,6 +443,7 @@ if __name__ == "__main__":
         print("  python kronos_inference.py convert_csv <csv_file> <output_file> [window_size]")
         print("  python kronos_inference.py analyze <checkpoint_path>")
         print("  python kronos_inference.py predict <model_path> <input_file> <output_file>")
+        print("  (Data files use JSON format)")
         sys.exit(1)
     
     command = sys.argv[1]

@@ -1,9 +1,50 @@
+import io
 import pickle
 import random
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from config import Config
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+    """Whitelist-based unpickler to prevent arbitrary code execution."""
+
+    SAFE_CLASSES = {
+        # Built-in types
+        'builtins': {'dict', 'list', 'tuple', 'set', 'frozenset', 'str', 'int', 'float', 'bool', 'bytes', 'NoneType'},
+        # NumPy
+        'numpy': {'ndarray', 'dtype'},
+        'numpy.core.multiarray': {'_reconstruct', 'scalar'},
+        'numpy.core.numeric': {'_frombuffer'},
+        # Pandas
+        'pandas': {'DataFrame', 'Series', 'Index'},
+        'pandas.core.frame': {'DataFrame'},
+        'pandas.core.series': {'Series'},
+        'pandas.core.indexes.base': {'Index', 'Float64Index', 'Int64Index'},
+        'pandas.core.indexes.datetimes': {'DatetimeIndex'},
+        'pandas.core.indexes.numeric': {'Float64Index', 'Int64Index'},
+        'pandas._libs.internals': {'BlockManager'},
+        'pandas.core.internals': {'BlockManager'},
+        'pandas.core.internals.blocks': {'Block', 'FloatBlock', 'IntBlock', 'ObjectBlock', 'DatetimeBlock'},
+        'collections': {'OrderedDict'},
+    }
+
+    def find_class(self, module, name):
+        allowed = self.SAFE_CLASSES.get(module)
+        if allowed and name in allowed:
+            mod = __import__(module, fromlist=[name])
+            return getattr(mod, name)
+        raise pickle.UnpicklingError(
+            f"Blocked unsafe deserialization: {module}.{name}. "
+            f"Only pandas/numpy data types are allowed."
+        )
+
+
+def _safe_pickle_load(file_obj):
+    """Load pickle data with a restricted class whitelist."""
+    return _RestrictedUnpickler(file_obj).load()
 
 
 class QlibDataset(Dataset):
@@ -39,7 +80,7 @@ class QlibDataset(Dataset):
             self.n_samples = self.config.n_val_iter
 
         with open(self.data_path, 'rb') as f:
-            self.data = pickle.load(f)
+            self.data = _safe_pickle_load(f)
 
         self.window = self.config.lookback_window + self.config.predict_window + 1
 
