@@ -595,6 +595,116 @@ class KronosClassificationModel(nn.Module):
         return model
 
 
+class KronosClassificationONNXWrapper(nn.Module):
+    """
+    Lightweight ONNX-exportable wrapper that takes raw OHLCV [B, T, 5]
+    and outputs a single sigmoid score [B, 1].
+
+    Uses a simple learned projection to replace the tokenizer + backbone,
+    keeping the classification head. Designed for dummy/testing purposes.
+    """
+
+    def __init__(self, d_in: int = 5, hidden_size: int = 256, seq_len: int = 64):
+        super().__init__()
+        self.seq_len = seq_len
+        # Simple learned backbone substitute
+        self.input_proj = nn.Linear(d_in, hidden_size)
+        self.backbone = nn.Sequential(
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+        )
+        self.classifier = nn.Sequential(
+            nn.Dropout(0.1),
+            nn.Linear(hidden_size, hidden_size),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_size, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(self, ohlcv: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            ohlcv: [batch_size, seq_len, 5] raw OHLCV data
+        Returns:
+            score: [batch_size, 1] sigmoid score in [0, 1]
+        """
+        x = self.input_proj(ohlcv)  # [B, T, hidden]
+        x = self.backbone[0](x)     # Linear
+        x = self.backbone[1](x)     # GELU
+        x = self.backbone[2](x)     # Linear
+        x = self.backbone[3](x)     # GELU
+        x = x.mean(dim=1)           # [B, hidden] mean pool
+        score = self.classifier(x)  # [B, 1]
+        return score
+
+    def export_to_onnx(
+        self,
+        export_path: str,
+        opset_version: int = 17,
+        sample_input: Optional[torch.Tensor] = None,
+    ) -> str:
+        """
+        Export model to ONNX format and validate with onnxruntime.
+
+        Args:
+            export_path: Path to save the .onnx file
+            opset_version: ONNX opset version
+            sample_input: Optional sample input tensor [1, seq_len, 5]
+
+        Returns:
+            Path to exported ONNX file
+        """
+        self.eval()
+        if sample_input is None:
+            sample_input = torch.randn(1, self.seq_len, 5)
+
+        os.makedirs(os.path.dirname(export_path) or ".", exist_ok=True)
+
+        torch.onnx.export(
+            self,
+            sample_input,
+            export_path,
+            opset_version=opset_version,
+            input_names=["ohlcv"],
+            output_names=["score"],
+            dynamic_axes={
+                "ohlcv": {0: "batch_size", 1: "seq_len"},
+                "score": {0: "batch_size"},
+            },
+            do_constant_folding=True,
+        )
+        logger.info(f"Exported ONNX model to {export_path}")
+
+        # Validate with onnxruntime
+        try:
+            import onnxruntime as ort
+            import numpy as np
+
+            sess = ort.InferenceSession(export_path)
+            test_input = np.random.randn(10, self.seq_len, 5).astype(np.float32)
+            outputs = sess.run(None, {"ohlcv": test_input})
+            scores = outputs[0]
+
+            assert scores.shape == (10, 1), f"Expected shape (10, 1), got {scores.shape}"
+            assert np.all(scores >= 0.0) and np.all(scores <= 1.0), \
+                f"Scores out of [0, 1]: min={scores.min()}, max={scores.max()}"
+
+            logger.info(
+                f"ONNX validation passed: {len(scores)} outputs, "
+                f"range=[{scores.min():.4f}, {scores.max():.4f}]"
+            )
+        except ImportError:
+            logger.warning("onnxruntime not installed, skipping validation")
+        except Exception as e:
+            logger.error(f"ONNX validation failed: {e}")
+            raise
+
+        return export_path
+
+
 class KronosClassificationConfig:
     """Configuration for Kronos Classification Model."""
     
