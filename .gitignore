@@ -73,3 +73,6 @@ venv.bak/
 *.temp
 temp/
 tmp/
+
+# API key (persistent, generated)
+webui/.api_key

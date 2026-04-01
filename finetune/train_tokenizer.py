@@ -12,7 +12,11 @@ from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-import comet_ml
+try:
+    import comet_ml
+    HAS_COMET = True
+except ImportError:
+    HAS_COMET = False
 
 # Ensure project root is in path
 sys.path.append("../")
@@ -234,7 +238,7 @@ def main(config: dict):
             'save_directory': save_dir,
             'world_size': world_size,
         }
-        if config['use_comet']:
+        if config['use_comet'] and HAS_COMET:
             comet_logger = comet_ml.Experiment(
                 api_key=config['comet_config']['api_key'],
                 project_name=config['comet_config']['project_name'],
@@ -244,6 +248,8 @@ def main(config: dict):
             comet_logger.set_name(config['comet_name'])
             comet_logger.log_parameters(config)
             print("Comet Logger Initialized.")
+        elif config['use_comet'] and not HAS_COMET:
+            print("comet_ml not installed — Comet logging disabled.")
 
     dist.barrier()  # Ensure save directory is created before proceeding
 

@@ -69,7 +69,8 @@ def main():
     
     # Start server
     try:
-        from app import app
+        from app import create_app
+        app = create_app()
         print("✅ Web server started successfully!")
         print(f"🌐 Access URL: http://localhost:7070")
         print("💡 Tip: Press Ctrl+C to stop server")
