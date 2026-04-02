@@ -23,6 +23,7 @@ from qlib.utils.time import Freq
 sys.path.append("../")
 from config import Config
 from model.kronos import Kronos, KronosTokenizer, auto_regressive_inference
+from dataset import _safe_pickle_load
 
 
 # =================================================================================
@@ -337,7 +338,7 @@ def main():
     # SAFETY: Loading known-good test fixture from read-only training output.
     # The data path is sourced from run_config (controlled training pipeline), not user input.
     with open(test_data_path, 'rb') as f:
-        test_data = pickle.load(f)
+        test_data = _safe_pickle_load(f)
     print(test_data)
     # --- 3. Generate Predictions ---
     model_preds = generate_predictions(run_config, test_data)
@@ -353,7 +354,7 @@ def main():
     # --- 5. Run Backtesting ---
     # SAFETY: Re-reading file we just wrote above (line ~345). Not user-controlled input.
     with open(predictions_file, 'rb') as f:
-        model_preds = pickle.load(f)
+        model_preds = _safe_pickle_load(f)
 
     backtester = QlibBacktest(base_config)
     backtester.run_and_plot_results(model_preds)
