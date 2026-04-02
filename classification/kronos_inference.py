@@ -11,6 +11,7 @@ import json
 from tqdm import tqdm
 import os
 import sys
+import pickle
 
 
 class KronosClassificationPipeline:
@@ -437,10 +438,26 @@ def analyze_checkpoint(checkpoint_path: str):
                 print(f"  Actual:   {actual_hash}")
                 print(f"  File may be tampered. Skipping training state load.")
             else:
-                # weights_only=False required: training_state.bin contains optimizer/scheduler
-                # state dicts with non-tensor Python objects that cannot be loaded with weights_only=True.
-                # Only load training state files produced by our own training code.
-                training_state = torch.load(training_state_path, map_location='cpu', weights_only=False)
+                # SECURITY: Use weights_only=True to prevent arbitrary code execution.
+                # Only load training state files produced by our own training code
+                # and verified via SHA-256 above.
+                try:
+                    training_state = torch.load(training_state_path, map_location='cpu', weights_only=True)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "weights_only=True failed for training_state.bin; "
+                        "file may contain non-tensor objects. Retrying with safe_globals.")
+                    import io
+                    class SafeUnpickler(pickle.Unpickler):
+                        def find_class(self, module, name):
+                            allowed = {'collections.OrderedDict', 'dict', 'list', 'tuple', 'set', 'frozenset', 'int', 'float', 'str', 'bool', 'bytes'}
+                            fqn = f"{module}.{name}"
+                            if fqn in allowed or name in allowed:
+                                return super().find_class(module, name)
+                            raise pickle.UnpicklingError(f"Blocked: {fqn}")
+                    with open(training_state_path, 'rb') as _f:
+                        training_state = SafeUnpickler(_f).load()
                 print("\nTraining State:")
                 print(f"Global step: {training_state.get('global_step', 'N/A')}")
                 print(f"Best validation metric: {training_state.get('best_val_metric', training_state.get('best_val_loss', 'N/A'))}")

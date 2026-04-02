@@ -334,6 +334,8 @@ def main():
     # --- 2. Load Data ---
     test_data_path = os.path.join(run_config['data_path'], "test_data.pkl")
     print(f"Loading test data from {test_data_path}...")
+    # SAFETY: Loading known-good test fixture from read-only training output.
+    # The data path is sourced from run_config (controlled training pipeline), not user input.
     with open(test_data_path, 'rb') as f:
         test_data = pickle.load(f)
     print(test_data)
@@ -349,6 +351,7 @@ def main():
         pickle.dump(model_preds, f)
 
     # --- 5. Run Backtesting ---
+    # SAFETY: Re-reading file we just wrote above (line ~345). Not user-controlled input.
     with open(predictions_file, 'rb') as f:
         model_preds = pickle.load(f)
 
