@@ -36,6 +36,14 @@ def create_app():
 # Legacy: allow `from app import app` for backwards compat with run.py
 app = create_app()
 
+# Re-export for backwards compatibility with tests
+from .services import (  # noqa: E402, F401
+    load_data_files, load_data_file,
+    save_prediction_results, create_prediction_chart,
+    MODEL_AVAILABLE, AVAILABLE_MODELS,
+)
+from .config import API_KEY  # noqa: E402, F401
+
 if __name__ == '__main__':
     print("Starting Kronos Web UI...")
     from .services import MODEL_AVAILABLE
